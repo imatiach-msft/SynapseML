@@ -38,6 +38,8 @@ class FuzzingTest extends TestBase {
       experimentFuzzers.map(f =>
         (f.experimentTestObjects().head.stage.getClass, f)).toMap
     val classesWithFuzzers = classToFuzzer.keys
+    print("applicable classes: " + applicableClasses.map(_.getName).mkString(","))
+    print("classes with fuzzers: " + classesWithFuzzers.map(_.getName).mkString(","))
     val classesWithoutFuzzers = applicableClasses.diff(classesWithFuzzers.toSet)
     assertOrLog(classesWithoutFuzzers.isEmpty,
                 "These classes do not have Experiment fuzzers, \n" +

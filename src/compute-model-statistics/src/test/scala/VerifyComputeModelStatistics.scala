@@ -36,6 +36,15 @@ class VerifyComputeModelStatistics extends TransformerFuzzing[ComputeModelStatis
     (1, 4, 0.12, 0.34, 3)
   )).toDF(labelColumn, "col1", "col2", "col3", "col4")
 
+  test("weird issue") {
+
+    val dataset = session.read.parquet("/home/ilya/mmlspark/src/compute-model-statistics/src/test/scala/output.parquet")
+
+    val evaluatedData = new ComputeModelStatistics().transform(dataset)
+    val firstRow = evaluatedData.first()
+    evaluatedData.show()
+  }
+
   test("Smoke test for evaluating a dataset") {
     val predictionColumn = SchemaConstants.SparkPredictionColumn
     val scoreModelName = SchemaConstants.ScoreModelPrefix + "_test model"

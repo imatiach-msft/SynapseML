@@ -14,7 +14,7 @@ import scala.collection.mutable.ListBuffer
 import com.microsoft.ml.spark.metrics.MetricConstants
 
 /** Tests to validate the functionality of Tune Hyperparameters module. */
-class VerifyTuneHyperparameters extends Benchmarks {
+class VerifyTuneHyperparameters extends Benchmarks with EstimatorFuzzing[TuneHyperparameters] {
 
   lazy val moduleName = "tune-hyperparameters"
 
