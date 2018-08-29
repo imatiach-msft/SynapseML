@@ -66,6 +66,16 @@ class ImageReaderSuite extends TestBase with FileReaderUtils {
     assert(imageDF.select("image.bytes").collect().map(_.getAs[Array[Byte]](0)).length == 6)
   }
 
+  test("read 16-bit images") {
+    val files = recursiveListFiles(new File("/home/ilya/mmlspark/src/io/image/src/test/scala/16bit"))
+      .toSeq.map(f => Tuple1("file://" + f.toString))
+    val df = session
+      .createDataFrame(files)
+      .toDF("filenames")
+    val imageDF = ImageReader.readFromPaths(df, "filenames")
+    print(imageDF.select("image.bytes").collect().map(_.getAs[Array[Byte]](0)).length)
+  }
+
   test("read from strings 2") {
     import session.implicits._
 
