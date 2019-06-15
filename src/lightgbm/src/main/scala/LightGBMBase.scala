@@ -60,7 +60,7 @@ trait LightGBMBase[TrainedModel <: Model[TrainedModel]] extends Estimator[Traine
     val networkParams = NetworkParams(getDefaultListenPort, inetAddress, port)
     val validationData =
       if (get(validationIndicatorCol).isDefined && dataset.columns.contains(getValidationIndicatorCol))
-        Some(sc.broadcast(df.filter(x => x.getBoolean(x.fieldIndex(getValidationIndicatorCol))).collect()))
+        Some(sc.broadcast(df.filter(x => x.getBoolean(x.fieldIndex(getValidationIndicatorCol))).collect().toIterator))
       else None
     val preprocessedDF = preprocessData(df)
     val schema = preprocessedDF.schema

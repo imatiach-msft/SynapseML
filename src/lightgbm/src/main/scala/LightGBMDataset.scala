@@ -33,7 +33,7 @@ class LightGBMDataset(val dataset: SWIGTYPE_p_void) extends AutoCloseable {
     }
   }
 
-  def addFloatField(field: Array[Double], fieldName: String, numRows: Int): Unit = {
+  def addFloatField(field: Iterator[Double], fieldName: String, numRows: Int): Unit = {
     // Generate the column and add to dataset
     var colArray: Option[SWIGTYPE_p_float] = None
     try {
@@ -51,7 +51,7 @@ class LightGBMDataset(val dataset: SWIGTYPE_p_void) extends AutoCloseable {
     }
   }
 
-  def addDoubleField(field: Array[Double], fieldName: String, numRows: Int): Unit = {
+  def addDoubleField(field: Iterator[Double], fieldName: String, numRows: Int): Unit = {
     // Generate the column and add to dataset
     var colArray: Option[SWIGTYPE_p_double] = None
     try {
@@ -69,7 +69,7 @@ class LightGBMDataset(val dataset: SWIGTYPE_p_void) extends AutoCloseable {
     }
   }
 
-  def addIntField(field: Array[Int], fieldName: String, numRows: Int): Unit = {
+  def addIntField(field: Iterator[Int], fieldName: String, numRows: Int): Unit = {
     // Generate the column and add to dataset
     var colArray: Option[SWIGTYPE_p_int] = None
     try {

@@ -305,9 +305,9 @@ object LightGBMUtils {
     lightgbmlib.long_to_int64_t_ptr(longPtr)
   }
 
-  def generateData(numRows: Int, rowsAsDoubleArray: Array[Array[Double]]):
+  def generateData(numRows: Int, rowsAsDoubleArray: Iterator[Array[Double]]):
       (SWIGTYPE_p_void, SWIGTYPE_p_double) = {
-    val numCols = rowsAsDoubleArray.head.length
+    val numCols = rowsAsDoubleArray.buffered.head.length
     val data = lightgbmlib.new_doubleArray(numCols * numRows)
     rowsAsDoubleArray.zipWithIndex.foreach(ri =>
       ri._1.zipWithIndex.foreach(value =>
@@ -315,13 +315,13 @@ object LightGBMUtils {
     (lightgbmlib.double_to_voidp_ptr(data), data)
   }
 
-  def generateDenseDataset(numRows: Int, rowsAsDoubleArray: Array[Array[Double]],
+  def generateDenseDataset(numRows: Int, rowsAsDoubleArray: Iterator[Array[Double]],
                            referenceDataset: Option[LightGBMDataset],
                            featureNamesOpt: Option[Array[String]]): LightGBMDataset = {
     val numRowsIntPtr = lightgbmlib.new_intp()
     lightgbmlib.intp_assign(numRowsIntPtr, numRows)
     val numRows_int32_tPtr = lightgbmlib.int_to_int32_t_ptr(numRowsIntPtr)
-    val numCols = rowsAsDoubleArray.head.length
+    val numCols = rowsAsDoubleArray.buffered.head.length
     val isRowMajor = 1
     val numColsIntPtr = lightgbmlib.new_intp()
     lightgbmlib.intp_assign(numColsIntPtr, numCols)
@@ -350,10 +350,10 @@ object LightGBMUtils {
     * @param sparseRows The rows of sparse vector.
     * @return
     */
-  def generateSparseDataset(sparseRows: Array[SparseVector],
+  def generateSparseDataset(sparseRows: Iterator[SparseVector],
                             referenceDataset: Option[LightGBMDataset],
                             featureNamesOpt: Option[Array[String]]): LightGBMDataset = {
-    val numCols = sparseRows(0).size
+    val numCols = sparseRows.buffered.head.size
 
     val datasetOutPtr = lightgbmlib.voidpp_handle()
     val datasetParams = "max_bin=255 is_pre_partition=True"

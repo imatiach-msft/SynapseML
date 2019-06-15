@@ -19,12 +19,13 @@ case class NetworkParams(defaultListenPort: Int, addr: String, port: Int)
 
 private object TrainUtils extends Serializable {
 
-  def generateDataset(rows: Array[Row], labelColumn: String, featuresColumn: String,
+  def generateDataset(rows: Iterator[Row], labelColumn: String, featuresColumn: String,
                       weightColumn: Option[String], initScoreColumn: Option[String], groupColumn: Option[String],
                       referenceDataset: Option[LightGBMDataset], schema: StructType): Option[LightGBMDataset] = {
     val numRows = rows.length
     val labels = rows.map(row => row.getDouble(schema.fieldIndex(labelColumn)))
-    val hrow = rows.head
+    val bufferedRows = rows.buffered
+    val hrow = bufferedRows.head
     var datasetPtr: Option[LightGBMDataset] = None
     datasetPtr =
       if (hrow.get(schema.fieldIndex(featuresColumn)).isInstanceOf[DenseVector]) {
@@ -32,14 +33,14 @@ private object TrainUtils extends Serializable {
           case dense: DenseVector => dense.toArray
           case sparse: SparseVector => sparse.toDense.toArray
         })
-        val slotNames = getSlotNames(schema, featuresColumn, rowsAsDoubleArray.head.length)
+        val slotNames = getSlotNames(schema, featuresColumn, rowsAsDoubleArray.buffered.head.length)
         Some(LightGBMUtils.generateDenseDataset(numRows, rowsAsDoubleArray, referenceDataset, slotNames))
       } else {
         val rowsAsSparse = rows.map(row => row.get(schema.fieldIndex(featuresColumn)) match {
           case dense: DenseVector => dense.toSparse
           case sparse: SparseVector => sparse
         })
-        val slotNames = getSlotNames(schema, featuresColumn, rowsAsSparse(0).size)
+        val slotNames = getSlotNames(schema, featuresColumn, rowsAsSparse.buffered.head.size)
         Some(LightGBMUtils.generateSparseDataset(rowsAsSparse, referenceDataset, slotNames))
       }
 
@@ -58,7 +59,7 @@ private object TrainUtils extends Serializable {
     datasetPtr
   }
 
-  def addGroupColumn(rows: Array[Row], groupColumn: Option[String],
+  def addGroupColumn(rows: Iterator[Row], groupColumn: Option[String],
                      datasetPtr: Option[LightGBMDataset], numRows: Int, schema: StructType): Unit = {
     groupColumn.foreach { col =>
       val datatype = schema.fields(schema.fieldIndex(col)).dataType
@@ -86,7 +87,7 @@ private object TrainUtils extends Serializable {
           (listValue._3 :: listValue._1, currentValue, 1)
         }
       }
-      val groupCardinality = (cardinalityTriplet._3 :: cardinalityTriplet._1).reverse.toArray
+      val groupCardinality = (cardinalityTriplet._3 :: cardinalityTriplet._1).reverse.toIterator
       datasetPtr.get.addIntField(groupCardinality, "group", groupCardinality.length)
     }
   }
@@ -212,14 +213,13 @@ private object TrainUtils extends Serializable {
 
   def translate(labelColumn: String, featuresColumn: String, weightColumn: Option[String],
                 initScoreColumn: Option[String], groupColumn: Option[String],
-                validationData: Option[Broadcast[Array[Row]]],
+                validationData: Option[Broadcast[Iterator[Row]]],
                 log: Logger, trainParams: TrainParams, schema: StructType,
                 inputRows: Iterator[Row]): Iterator[LightGBMBooster] = {
-    val rows = inputRows.toArray
     var trainDatasetPtr: Option[LightGBMDataset] = None
     var validDatasetPtr: Option[LightGBMDataset] = None
     try {
-      trainDatasetPtr = generateDataset(rows, labelColumn, featuresColumn,
+      trainDatasetPtr = generateDataset(inputRows, labelColumn, featuresColumn,
         weightColumn, initScoreColumn, groupColumn, None, schema)
       if (validationData.isDefined) {
         validDatasetPtr = generateDataset(validationData.get.value, labelColumn,
@@ -323,7 +323,7 @@ private object TrainUtils extends Serializable {
 
   def trainLightGBM(networkParams: NetworkParams, labelColumn: String, featuresColumn: String,
                     weightColumn: Option[String], initScoreColumn: Option[String], groupColumn: Option[String],
-                    validationData: Option[Broadcast[Array[Row]]], log: Logger,
+                    validationData: Option[Broadcast[Iterator[Row]]], log: Logger,
                     trainParams: TrainParams, numCoresPerExec: Int, schema: StructType)
                    (inputRows: Iterator[Row]): Iterator[LightGBMBooster] = {
     val emptyPartition = !inputRows.hasNext
