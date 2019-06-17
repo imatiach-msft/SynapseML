@@ -22,8 +22,12 @@ private object TrainUtils extends Serializable {
   def generateDataset(rows: Iterator[Row], labelColumn: String, featuresColumn: String,
                       weightColumn: Option[String], initScoreColumn: Option[String], groupColumn: Option[String],
                       referenceDataset: Option[LightGBMDataset], schema: StructType): Option[LightGBMDataset] = {
-    val numRows = rows.length
-    val labels = rows.map(row => row.getDouble(schema.fieldIndex(labelColumn)))
+    val (rows1, rows2) = rows.duplicate
+    val numRows = rows2.length
+    val labels, weights = rows1.map(row => {
+      (row.getDouble(schema.fieldIndex(labelColumn)),
+        weightColumn.foreach { col => row.getDouble(schema.fieldIndex(col)) })
+    }).toArray
     val bufferedRows = rows.buffered
     val hrow = bufferedRows.head
     var datasetPtr: Option[LightGBMDataset] = None
