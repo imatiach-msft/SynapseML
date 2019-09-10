@@ -19,7 +19,7 @@ import org.apache.spark.ml.feature.StringIndexer
 import org.apache.spark.ml.linalg.{DenseVector, Vector}
 import org.apache.spark.ml.tuning.{ParamGridBuilder, TrainValidationSplit}
 import org.apache.spark.ml.util.MLReadable
-import org.apache.spark.ml.{Estimator, Model}
+import org.apache.spark.ml.{Estimator, Model, Pipeline, PipelineModel}
 import org.apache.spark.sql.{Column, DataFrame}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.functions._
@@ -242,6 +242,21 @@ class VerifyLightGBMClassifier extends Benchmarks with EstimatorFuzzing[LightGBM
     val scoredDF2 = baseModel.setInitScoreCol(initScoreCol).fit(df2).transform(df2)
 
     assertBinaryImprovement(scoredDF1, scoredDF2)
+  }
+
+  test("Verify LightGBM Classifier save and load with PipelineModel") {
+    val pipeline = new Pipeline().setStages(Array(baseModel))
+    val pipelineModel = pipeline.fit(pimaDF)
+    // Try to save and load the Pipeline from disk
+    val pipelineFile = new File(tmpDir.toFile, "pipeline").toString
+    pipeline.write.overwrite().save(pipelineFile)
+    val pipelineLoaded = Pipeline.load(pipelineFile)
+    pipelineLoaded.fit(pimaDF)
+    // Try to save and load the PipelineModel from disk
+    val pipelineModelFile = new File(tmpDir.toFile, "pipelineModel").toString
+    pipelineModel.write.overwrite().save(pipelineModelFile)
+    val pipelineModelLoaded = PipelineModel.load(pipelineModelFile)
+    pipelineModelLoaded.transform(pimaDF).collect()
   }
 
   test("Verify LightGBM Classifier with weight column") {
