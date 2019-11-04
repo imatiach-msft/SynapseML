@@ -28,6 +28,7 @@ abstract class TrainParams extends Serializable {
   def lambdaL2: Double
   def isProvideTrainingMetric: Boolean
   def metric: String
+  def saveModelInterval: Int
 
   override def toString: String = {
     // Since passing `isProvideTrainingMetric` to LightGBM as a config parameter won't work,
@@ -53,7 +54,8 @@ case class ClassifierTrainParams(parallelism: String, numIterations: Int, learni
                                  isUnbalance: Boolean, verbosity: Int, categoricalFeatures: Array[Int],
                                  numClass: Int, boostFromAverage: Boolean,
                                  boostingType: String, lambdaL1: Double, lambdaL2: Double,
-                                 isProvideTrainingMetric: Boolean, metric: String)
+                                 isProvideTrainingMetric: Boolean, metric: String,
+                                 saveModelInterval: Int)
   extends TrainParams {
   override def toString(): String = {
     val extraStr =
@@ -74,7 +76,8 @@ case class RegressorTrainParams(parallelism: String, numIterations: Int, learnin
                                 modelString: Option[String], verbosity: Int,
                                 categoricalFeatures: Array[Int], boostFromAverage: Boolean,
                                 boostingType: String, lambdaL1: Double, lambdaL2: Double,
-                                isProvideTrainingMetric: Boolean, metric: String)
+                                isProvideTrainingMetric: Boolean, metric: String,
+                                saveModelInterval: Int)
   extends TrainParams {
   override def toString(): String = {
     s"alpha=$alpha tweedie_variance_power=$tweedieVariancePower boost_from_average=${boostFromAverage.toString} " +
@@ -93,7 +96,7 @@ case class RankerTrainParams(parallelism: String, numIterations: Int, learningRa
                              categoricalFeatures: Array[Int], boostingType: String,
                              lambdaL1: Double, lambdaL2: Double, maxPosition: Int,
                              labelGain: Array[Double], isProvideTrainingMetric: Boolean,
-                             metric: String, evalAt: Array[Int])
+                             metric: String, evalAt: Array[Int], saveModelInterval: Int)
   extends TrainParams {
   override def toString(): String = {
     val labelGainStr =

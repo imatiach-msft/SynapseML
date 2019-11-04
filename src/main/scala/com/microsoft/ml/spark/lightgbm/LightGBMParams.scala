@@ -219,4 +219,12 @@ trait LightGBMParams extends Wrappable with DefaultParamsWritable with HasWeight
 
   def getMetric: String = $(metric)
   def setMetric(value: String): this.type = set(metric, value)
+
+  val saveModelInterval = new IntParam(this, "saveModelInterval",
+    "If nonzero, saves the model on every specified iterations during training, " +
+      "where 1 would save it on every iteration")
+  setDefault(saveModelInterval -> 0)
+
+  def getSaveModelInterval: Int = $(saveModelInterval)
+  def setSaveModelInterval(value: Int): this.type = set(saveModelInterval, value)
 }

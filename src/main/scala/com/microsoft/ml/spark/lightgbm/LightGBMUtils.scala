@@ -179,6 +179,7 @@ object LightGBMUtils {
   def getId(): Int = {
     val executorId = SparkEnv.get.executorId
     val ctx = TaskContext.get
+    SparkEnv.get.conf
     val partId = ctx.partitionId
     // If driver, this is only in test scenario, make each partition a separate worker
     val id = if (executorId == "driver") partId else executorId

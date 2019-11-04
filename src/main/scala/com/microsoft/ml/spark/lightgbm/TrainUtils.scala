@@ -11,7 +11,7 @@ import com.microsoft.ml.spark.core.env.StreamUtilities.using
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.attribute._
 import org.apache.spark.ml.linalg.{DenseVector, SparseVector}
-import org.apache.spark.sql.Row
+import org.apache.spark.sql.{Row, SparkSession}
 import org.apache.spark.sql.types.StructType
 import org.slf4j.Logger
 import org.apache.spark.BarrierTaskContext
@@ -201,6 +201,15 @@ private object TrainUtils extends Serializable {
           }
         }
         lightgbmlib.delete_doubleArray(evalResults)
+      }
+      val saveModelInterval = trainParams.saveModelInterval
+      if (saveModelInterval > 0 && iters % saveModelInterval == 0) {
+        // Autosave the model every specified number of iterations
+        val modelStr = saveBoosterToString(boosterPtr, log)
+        val lightgbmFileName = "lightgbm_autosave_model_iter_" + iters
+        val session = SparkSession.builder().getOrCreate()
+        val lightgbmModel = new LightGBMBooster(modelStr)
+        lightgbmModel.saveNativeModel(session, lightgbmFileName, true)
       }
       iters = iters + 1
     }

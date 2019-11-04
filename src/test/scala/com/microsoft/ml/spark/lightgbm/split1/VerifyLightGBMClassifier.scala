@@ -370,6 +370,13 @@ class VerifyLightGBMClassifier extends Benchmarks with EstimatorFuzzing[LightGBM
     assertFitWithoutErrors(baseModel, df)
   }
 
+  test("Verify LightGBM Classifier can autosave the model every specified number of iters") {
+    val baseDF = pimaDF.select(labelCol, featuresCol)
+    // Validate we can fit without error
+    assertFitWithoutErrors(baseModel.setSaveModelInterval(10).setNumIterations(100), baseDF)
+    // Validate models are generated
+  }
+
   def verifyLearnerOnBinaryCsvFile(fileName: String,
                                    labelColumnName: String,
                                    decimals: Int): Unit = {
