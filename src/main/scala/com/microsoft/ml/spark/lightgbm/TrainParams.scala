@@ -3,6 +3,8 @@
 
 package com.microsoft.ml.spark.lightgbm
 
+import java.io.{File, PrintWriter}
+
 /** Defines the common Booster parameters passed to the LightGBM learners.
   */
 abstract class TrainParams extends Serializable {
@@ -39,8 +41,23 @@ abstract class TrainParams extends Serializable {
   def minDataInLeaf: Int
   def featureNames: Array[String]
   def delegate: Option[LightGBMDelegate]
+  def forcedSplits: String
 
   override def toString: String = {
+    var forcedSplitFilename = ""
+    if (!forcedSplits.isEmpty) {
+      // Write on each node
+      val tempFile = File.createTempFile("temp_lightgbm_", "_forced_splits")
+      tempFile.deleteOnExit()
+      forcedSplitFilename = tempFile.getAbsolutePath
+      new PrintWriter(tempFile) {
+        try {
+          write(forcedSplits)
+        } finally {
+          close()
+        }
+      }
+    }
     // Since passing `isProvideTrainingMetric` to LightGBM as a config parameter won't work,
     // let's fetch and print training metrics in `TrainUtils.scala` through JNI.
     s"is_pre_partition=True boosting_type=$boostingType tree_learner=$parallelism top_k=$topK " +
@@ -53,7 +70,8 @@ abstract class TrainParams extends Serializable {
       s"lambda_l1=$lambdaL1 lambda_l2=$lambdaL2  metric=$metric min_gain_to_split=$minGainToSplit " +
       s"max_delta_step=$maxDeltaStep min_data_in_leaf=$minDataInLeaf " +
       (if (categoricalFeatures.isEmpty) "" else s"categorical_feature=${categoricalFeatures.mkString(",")} ") +
-      (if (maxBinByFeature.isEmpty) "" else s"max_bin_by_feature=${maxBinByFeature.mkString(",")}")
+      (if (maxBinByFeature.isEmpty) "" else s"max_bin_by_feature=${maxBinByFeature.mkString(",")} ") +
+      (if (forcedSplitFilename.isEmpty) "" else s"forcedsplits_filename=${forcedSplitFilename}")
   }
 }
 
@@ -71,7 +89,8 @@ case class ClassifierTrainParams(parallelism: String, topK: Int, numIterations: 
                                  boostingType: String, lambdaL1: Double, lambdaL2: Double,
                                  isProvideTrainingMetric: Boolean, metric: String, minGainToSplit: Double,
                                  maxDeltaStep: Double, maxBinByFeature: Array[Int], minDataInLeaf: Int,
-                                 featureNames: Array[String], delegate: Option[LightGBMDelegate])
+                                 featureNames: Array[String], delegate: Option[LightGBMDelegate],
+                                 forcedSplits: String)
   extends TrainParams {
   override def toString(): String = {
     val extraStr =
@@ -95,7 +114,8 @@ case class RegressorTrainParams(parallelism: String, topK: Int, numIterations: I
                                 boostingType: String, lambdaL1: Double, lambdaL2: Double,
                                 isProvideTrainingMetric: Boolean, metric: String, minGainToSplit: Double,
                                 maxDeltaStep: Double, maxBinByFeature: Array[Int], minDataInLeaf: Int,
-                                featureNames: Array[String], delegate: Option[LightGBMDelegate])
+                                featureNames: Array[String], delegate: Option[LightGBMDelegate],
+                                forcedSplits: String)
   extends TrainParams {
   override def toString(): String = {
     s"alpha=$alpha tweedie_variance_power=$tweedieVariancePower boost_from_average=${boostFromAverage.toString} " +
@@ -116,7 +136,8 @@ case class RankerTrainParams(parallelism: String, topK: Int, numIterations: Int,
                              labelGain: Array[Double], isProvideTrainingMetric: Boolean,
                              metric: String, evalAt: Array[Int], minGainToSplit: Double,
                              maxDeltaStep: Double, maxBinByFeature: Array[Int], minDataInLeaf: Int,
-                             featureNames: Array[String], delegate: Option[LightGBMDelegate])
+                             featureNames: Array[String], delegate: Option[LightGBMDelegate],
+                             forcedSplits: String)
   extends TrainParams {
   override def toString(): String = {
     val labelGainStr =

@@ -173,6 +173,32 @@ class VerifyLightGBMRegressor extends Benchmarks
     assert(!evaluatedDf2.columns.contains(featuresShapCol))
   }
 
+  test("Verify LightGBM Regressor forced splits") {
+    val Array(train, test) = flareDF.randomSplit(Array(0.8, 0.2), seed)
+    val forcedSplits =
+      """
+        |{
+        |    "feature": 25,
+        |    "threshold": 1.30,
+        |    "left": {
+        |        "feature": 26,
+        |        "threshold": 0.85
+        |    },
+        |    "right": {
+        |        "feature": 26,
+        |        "threshold": 0.85
+        |    }
+        |}
+      """.stripMargin
+    val untrainedModel = baseModel
+      .setCategoricalSlotNames(flareDF.columns.filter(_.startsWith("c_")))
+      .setForcedSplits(forcedSplits)
+    val model = untrainedModel.fit(train)
+
+    val evaluatedDf = model.transform(test)
+    println(model.getModel.model)
+  }
+
   def verifyLearnerOnRegressionCsvFile(fileName: String,
                                        labelCol: String,
                                        decimals: Int,

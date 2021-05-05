@@ -391,4 +391,11 @@ trait LightGBMParams extends Wrappable with DefaultParamsWritable with HasWeight
     this.delegate = Option(delegate)
     this
   }
+
+  val forcedSplits = new Param[String](this, "forcedSplits",
+    "Json that specifies splits to force at the top of every " +
+      "decision tree before best-first learning commences")
+
+  def getForcedSplits: String = $(forcedSplits)
+  def setForcedSplits(value: String): this.type = set(forcedSplits, value)
 }
