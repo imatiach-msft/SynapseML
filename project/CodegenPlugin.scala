@@ -8,7 +8,7 @@ import spray.json._
 import BuildUtils._
 
 object CodegenConfigProtocol extends DefaultJsonProtocol {
-  implicit val CCFormat: RootJsonFormat[CodegenConfig] = jsonFormat9(CodegenConfig.apply)
+  implicit val CCFormat: RootJsonFormat[CodegenConfig] = jsonFormat8(CodegenConfig.apply)
 }
 
 import CodegenConfigProtocol._
@@ -20,7 +20,6 @@ case class CodegenConfig(name: String,
                          version: String,
                          pythonizedVersion: String,
                          rVersion: String,
-                         dotnetVersion: String,
                          packageName: String)
 
 //noinspection ScalaStyle
@@ -29,19 +28,29 @@ object CodegenPlugin extends AutoPlugin {
 
   override def requires: Plugins = CondaPlugin
 
+  private def findBuiltPythonWheel(packageDir: File, projectName: String): File = {
+    val wheelPrefix = s"${projectName.replace("-", "_")}-"
+    val wheels = Option(packageDir.listFiles()).getOrElse(Array.empty).filter { file =>
+      file.isFile &&
+      file.getName.startsWith(wheelPrefix) &&
+      file.getName.endsWith(".whl")
+    }.sortBy(_.lastModified())
+
+    wheels.lastOption.getOrElse {
+      throw new IllegalStateException(s"No built wheel found in ${packageDir.getAbsolutePath} for $projectName")
+    }
+  }
+
   def rCmd(activateCondaEnv: Seq[String], cmd: Seq[String], wd: File, libPath: String): Unit = {
     runCmd(activateCondaEnv ++ cmd, wd, Map("R_LIBS" -> libPath, "R_USER_LIBS" -> libPath))
   }
 
   val RInstallTag = Tags.Tag("rInstall")
   val TestGenTag = Tags.Tag("testGen")
-  val DotnetTestGenTag = Tags.Tag("dotnetTestGen")
   val PyCodeGenTag = Tags.Tag("pyCodeGen")
   val PyTestGenTag = Tags.Tag("pyTestGen")
   val RCodeGenTag = Tags.Tag("rCodeGen")
   val RTestGenTag = Tags.Tag("rTestGen")
-  val DotnetCodeGenTag = Tags.Tag("dotnetCodeGen")
-  val TestDotnetTag = Tags.Tag("testDotnet")
 
   object autoImport {
     val rVersion = settingKey[String]("R version")
@@ -54,7 +63,6 @@ object CodegenPlugin extends AutoPlugin {
     val testgenJarName = settingKey[Option[String]]("testgenJarName")
     val codegenArgs = settingKey[String]("codegenArgs")
     val testgenArgs = settingKey[String]("testgenArgs")
-
 
     val targetDir = settingKey[File]("targetDir")
     val codegenDir = settingKey[File]("codegenDir")
@@ -70,28 +78,29 @@ object CodegenPlugin extends AutoPlugin {
 
     val packagePython = TaskKey[Unit]("packagePython", "Package python sdk")
     val installPipPackage = TaskKey[Unit]("installPipPackage", "install python sdk")
+    val preparePythonTests = TaskKey[Unit]("preparePythonTests",
+      "install local python packages required by tests")
+    val removePipPackage = TaskKey[Unit]("removePipPackage",
+      "remove the installed synapseml pip package from local env")
+
     val publishPython = TaskKey[Unit]("publishPython", "publish python wheel")
     val testPython = TaskKey[Unit]("testPython", "test python sdk")
+
+    val pythonIgnoreTestPath = settingKey[Option[String]]("Optional path to ignore in pytest")
+    val pythonSubTestPath = settingKey[Option[String]]("Optional subpath of tests to run")
+
     val pyCodegen = TaskKey[Unit]("pyCodegen", "Generate python code")
     val pyTestgen = TaskKey[Unit]("pyTestgen", "Generate python tests")
 
-    val dotnetTestGen = TaskKey[Unit]("dotnetTestgen", "Generate dotnet tests")
-    val dotnetCodeGen = TaskKey[Unit]("dotnetCodegen", "Generate dotnet code")
-    val packageDotnet = TaskKey[Unit]("packageDotnet", "Generate dotnet nuget package")
-    val publishDotnet = TaskKey[Unit]("publishDotnet", "publish dotnet nuget package")
-    val testDotnet = TaskKey[Unit]("testDotnet", "test dotnet nuget package")
-
     val mergeCodeDir = SettingKey[File]("mergeCodeDir")
     val mergePyCode = TaskKey[Unit]("mergePyCode", "copy python code to a destination")
-    val mergeDotnetCode = TaskKey[Unit]("mergeDotnetCode", "copy dotnet code to a destination")
   }
 
   import autoImport._
 
   override lazy val globalSettings: Seq[Setting[_]] = Seq(
     Global / concurrentRestrictions ++= Seq(
-      Tags.limit(RInstallTag, 1), Tags.limit(TestGenTag, 1), Tags.limit(DotnetTestGenTag, 1),
-      Tags.limit(DotnetCodeGenTag, 1), Tags.limit(TestDotnetTag, 1)),
+      Tags.limit(RInstallTag, 1), Tags.limit(TestGenTag, 1)),
     Global / excludeLintKeys += publishMavenStyle
   )
 
@@ -108,7 +117,7 @@ object CodegenPlugin extends AutoPlugin {
     val testRunner = join("tools", "tests", "run_r_tests.R")
     if (rTestDir.exists()) {
       rCmd(activateCondaEnv,
-      Seq("Rscript", testRunner.getAbsolutePath), rTestDir, libPath)
+        Seq("Rscript", testRunner.getAbsolutePath), rTestDir, libPath)
     }
   } tag (RInstallTag)
 
@@ -128,7 +137,7 @@ object CodegenPlugin extends AutoPlugin {
     Def.task {
       (Test / runMain).toTask(s" com.microsoft.azure.synapse.ml.codegen.PyCodegen $arg").value
     }
-  } tag (RCodeGenTag)
+  } tag (PyCodeGenTag)
 
   def pyTestGenImpl: Def.Initialize[Task[Unit]] = Def.taskDyn {
     (Compile / compile).value
@@ -157,38 +166,6 @@ object CodegenPlugin extends AutoPlugin {
     }
   } tag (RTestGenTag)
 
-  def dotnetTestGenImpl: Def.Initialize[Task[Unit]] = Def.taskDyn {
-    (Compile / compile).value
-    (Test / compile).value
-    val arg = testgenArgs.value
-    Def.task {
-      (Test / runMain).toTask(s" com.microsoft.azure.synapse.ml.codegen.DotnetTestGen $arg").value
-    }
-  } tag (DotnetTestGenTag)
-
-  def dotnetCodeGenImpl: Def.Initialize[Task[Unit]] = Def.taskDyn {
-    (Compile / compile).value
-    (Test / compile).value
-    val arg = codegenArgs.value
-    Def.task {
-      (Test / runMain).toTask(s" com.microsoft.azure.synapse.ml.codegen.DotnetCodegen $arg").value
-    }
-  } tag (DotnetCodeGenTag)
-
-  def testDotnetImpl: Def.Initialize[Task[Unit]] = Def.task {
-    dotnetTestGen.value
-    val mainTargetDir = join(baseDirectory.value.getParent, "target")
-    runCmd(
-      Seq("dotnet",
-        "test",
-        s"${join(codegenDir.value, "test", "dotnet", "SynapseMLtest", "TestProjectSetup.csproj")}",
-        "--logger",
-        s""""trx;LogFileName=${join(mainTargetDir, s"dotnet_test_results_${name.value}.trx")}""""
-      ),
-      new File(codegenDir.value, "test/dotnet/")
-    )
-  } tag (TestDotnetTag)
-
   override lazy val projectSettings: Seq[Setting[_]] = Seq(
     publishMavenStyle := true,
     codegenArgs := {
@@ -200,7 +177,6 @@ object CodegenPlugin extends AutoPlugin {
         version.value,
         pythonizedVersion(version.value),
         rVersion.value,
-        dotnetedVersion(version.value),
         genPackageNamespace.value
       ).toJson.compactPrint
     },
@@ -213,7 +189,6 @@ object CodegenPlugin extends AutoPlugin {
         version.value,
         pythonizedVersion(version.value),
         rVersion.value,
-        dotnetedVersion(version.value),
         genPackageNamespace.value
       ).toJson.compactPrint
     },
@@ -232,11 +207,17 @@ object CodegenPlugin extends AutoPlugin {
         art))
     },
     codegen := (Def.taskDyn {
-      (Compile / compile).value
-      (Test / compile).value
-      val arg = codegenArgs.value
-      Def.task {
-        (Compile / runMain).toTask(s" com.microsoft.azure.synapse.ml.codegen.CodeGen $arg").value
+      if (sys.props.getOrElse("skipCodegen", "false") != "true") {
+        (Compile / compile).value
+        (Test / compile).value
+        val arg = codegenArgs.value
+        Def.task {
+          (Compile / runMain).toTask(s" com.microsoft.azure.synapse.ml.codegen.CodeGen $arg").value
+        }
+      } else {
+        Def.task {
+          streams.value.log.info("Skipping codegen.")
+        }
       }
     }.value),
     testgen := testGenImpl.value,
@@ -270,27 +251,47 @@ object CodegenPlugin extends AutoPlugin {
       codegen.value
       createCondaEnvTask.value
       val destPyDir = join(targetDir.value, "classes", genPackageNamespace.value)
-      val packageDir = join(codegenDir.value, "package", "python").absolutePath
+      val packageDirFile = join(codegenDir.value, "package", "python")
+      val packageDir = packageDirFile.absolutePath
       val pythonSrcDir = join(codegenDir.value, "src", "python")
       if (destPyDir.exists()) FileUtils.forceDelete(destPyDir)
       val sourcePyDir = join(pythonSrcDir.getAbsolutePath, genPackageNamespace.value)
       FileUtils.copyDirectory(sourcePyDir, destPyDir)
+      Option(packageDirFile.listFiles()).getOrElse(Array.empty).foreach { file =>
+        if (file.isFile && file.getName.startsWith(s"${name.value.replace("-", "_")}-") && file.getName.endsWith(".whl")) {
+          FileUtils.forceDelete(file)
+        }
+      }
       packagePythonWheelCmd(packageDir, pythonSrcDir)
     },
+    removePipPackage := {
+      runCmd(activateCondaEnv ++ Seq("pip", "uninstall", "-y", name.value))
+    },
     installPipPackage := {
-      packagePython.value
-      publishLocal.value
+      val packagePythonResult: Unit = packagePython.value
+      val publishLocalResult: Unit = (publishLocal dependsOn packagePython).value
+      val rootPublishLocalResult: Unit = (LocalRootProject / Compile / publishLocal).value
+      val packageDir = join(codegenDir.value, "package", "python")
+      val wheel = findBuiltPythonWheel(packageDir, name.value)
       runCmd(
-        activateCondaEnv ++ Seq("pip", "install", "-I",
-          s"${name.value.replace("-", "_")}-${pythonizedVersion(version.value)}-py2.py3-none-any.whl"),
-        join(codegenDir.value, "package", "python"))
+        activateCondaEnv ++ Seq(
+          "pip",
+          "install",
+          "-I",
+          "--no-deps",
+          wheel.getAbsolutePath
+        ),
+        packageDir)
     },
     publishPython := {
-      publishLocal.value
-      packagePython.value
-      val fn = s"${name.value.replace("-", "_")}-${pythonizedVersion(version.value)}-py2.py3-none-any.whl"
+      val packagePythonResult: Unit = packagePython.value
+      val publishLocalResult: Unit = (publishLocal dependsOn packagePython).value
+      val rootPublishLocalResult: Unit = (LocalRootProject / Compile / publishLocal).value
+      val packageDir = join(codegenDir.value, "package", "python")
+      val wheel = findBuiltPythonWheel(packageDir, name.value)
+      val fn = wheel.getName
       singleUploadToBlob(
-        join(codegenDir.value, "package", "python", fn).toString,
+        wheel.toString,
         version.value + "/" + fn, "pip")
     },
     mergePyCode := {
@@ -298,51 +299,45 @@ object CodegenPlugin extends AutoPlugin {
       val destDir = join(mergeCodeDir.value, "src", "python", genPackageNamespace.value)
       FileUtils.copyDirectory(srcDir, destDir)
     },
-    mergeDotnetCode := {
-      val srcDir = join(codegenDir.value, "src", "dotnet", genPackageNamespace.value)
-      val destDir = join(mergeCodeDir.value, "src", "dotnet", genPackageNamespace.value)
-      FileUtils.copyDirectory(srcDir, destDir)
-    },
     pyCodegen := pyCodeGenImpl.value,
+    pythonIgnoreTestPath := sys.props.get("pythonIgnoreTestPath"),
+    pythonSubTestPath := sys.props.get("pythonSubTestPath"),
+    preparePythonTests := Def.taskDyn {
+      if (thisProjectRef.value.project == "core") {
+        Def.task {
+          installPipPackage.value
+        }
+      } else {
+        Def.sequential(
+          LocalProject("core") / installPipPackage,
+          installPipPackage
+        )
+      }
+    }.value,
     testPython := {
-      installPipPackage.value
+      preparePythonTests.value
       pyTestgen.value
       val mainTargetDir = join(baseDirectory.value.getParent, "target")
-      runCmd(
-        activateCondaEnv ++ Seq("python",
-          "-m",
-          "pytest",
-          //s"--cov=${genPackageNamespace.value}",
-          s"--junitxml=${join(mainTargetDir, s"python-test-results-${name.value}.xml")}",
-          //"--cov-report=xml",
-          genTestPackageNamespace.value
-        ),
-        new File(codegenDir.value, "test/python/")
-      )
+      val baseTestPath = genTestPackageNamespace.value
+      val ignoreArg = pythonIgnoreTestPath.value.map(path => s"--ignore=${new File(baseTestPath, path)}").toSeq
+      val subPathArg = pythonSubTestPath.value.map(identity).toSeq
+      val testPath: String = subPathArg.headOption
+        .map(sub => join(baseTestPath, sub).toString)
+        .getOrElse(baseTestPath)
+
+      val cmd = activateCondaEnv ++ Seq(
+        "python",
+        "-m", "pytest",
+        s"--junitxml=${join(mainTargetDir, s"python-test-results-${name.value}.xml")}",
+        // "--cov=${genPackageNamespace.value}",
+        // "--cov-report=xml",
+      ) ++ ignoreArg ++ Seq(testPath)
+
+      runCmd(cmd, new File(codegenDir.value, "test/python/"))
     },
     rCodeGen := rCodeGenImpl.value,
     rTestGen := rTestGenImpl.value,
     testR := testRImpl.value,
-    dotnetCodeGen := dotnetCodeGenImpl.value,
-    dotnetTestGen := dotnetTestGenImpl.value,
-    testDotnet := testDotnetImpl.value,
-    packageDotnet := {
-      dotnetCodeGen.value
-      val destDotnetDir = join(targetDir.value, "classes", genPackageNamespace.value)
-      val dotnetSrcDir = join(codegenDir.value, "src", "dotnet")
-      if (destDotnetDir.exists()) FileUtils.forceDelete(destDotnetDir)
-      val sourceDotnetDir = join(dotnetSrcDir.getAbsolutePath, genPackageNamespace.value)
-      FileUtils.copyDirectory(sourceDotnetDir, destDotnetDir)
-      val packageDir = join(codegenDir.value, "package", "dotnet").absolutePath
-      packDotnetAssemblyCmd(packageDir, join(dotnetSrcDir, "synapse", "ml"))
-    },
-    publishDotnet := {
-      packageDotnet.value
-      val dotnetPackageName = name.value.split("-").drop(1).map(s => s.capitalize).mkString("")
-      val packagePath = join(codegenDir.value, "package", "dotnet",
-        s"SynapseML.$dotnetPackageName.${dotnetedVersion(version.value)}.nupkg").absolutePath
-      publishDotnetAssemblyCmd(packagePath, join(mergeCodeDir.value, "sleet.json"))
-    },
     targetDir := {
       (Compile / packageBin / artifactPath).value.getParentFile
     },

@@ -4,9 +4,9 @@
 package com.microsoft.azure.synapse.ml.lightgbm
 
 import com.microsoft.azure.synapse.ml.lightgbm.booster.LightGBMBooster
-import com.microsoft.azure.synapse.ml.lightgbm.params.{
-  BaseTrainParams, LightGBMModelParams, LightGBMPredictionParams, RegressorTrainParams}
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.lightgbm.params.{BaseTrainParams, LightGBMModelParams,
+  LightGBMPredictionParams, RegressorTrainParams}
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.regression.RegressionModel
@@ -18,10 +18,10 @@ import org.apache.spark.sql.types.StructField
 
 object LightGBMRegressor extends DefaultParamsReadable[LightGBMRegressor]
 
-/** Trains a LightGBM Regression model, a fast, distributed, high performance gradient boosting
+/** Trains a LightGBM Regression model using a fast, distributed, high-performance gradient boosting
   * framework based on decision tree algorithms.
-  * For more information please see here: https://github.com/Microsoft/LightGBM.
-  * For parameter information see here: https://github.com/Microsoft/LightGBM/blob/master/docs/Parameters.rst
+  * For more information, please see here: https://github.com/lightgbm-org/LightGBM.
+  * For parameter information see here: https://github.com/lightgbm-org/LightGBM/blob/master/docs/Parameters.rst
   * Note: The application parameter supports the following values:
   *  - regression_l2, L2 loss, alias=regression, mean_squared_error, mse, l2_root, root_mean_squared_error, rmse
   *  - regression_l1, L1 loss, alias=mean_absolute_error, mae
@@ -39,7 +39,7 @@ object LightGBMRegressor extends DefaultParamsReadable[LightGBMRegressor]
 class LightGBMRegressor(override val uid: String)
   extends BaseRegressor[Vector, LightGBMRegressor, LightGBMRegressionModel]
     with LightGBMBase[LightGBMRegressionModel] with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.LightGBM)
 
   def this() = this(Identifiable.randomUID("LightGBMRegressor"))
 
@@ -59,7 +59,7 @@ class LightGBMRegressor(override val uid: String)
 
   def getTrainParams(numTasks: Int, featuresSchema: StructField, numTasksPerExec: Int): BaseTrainParams = {
     RegressorTrainParams(
-      get(passThroughArgs),
+      getEffectivePassThroughArgs,
       getAlpha,
       getTweedieVariancePower,
       getBoostFromAverage,
@@ -98,7 +98,7 @@ class LightGBMRegressionModel(override val uid: String)
     with LightGBMModelMethods
     with LightGBMPredictionParams
     with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.LightGBM)
 
   def this() = this(Identifiable.randomUID("LightGBMRegressionModel"))
 

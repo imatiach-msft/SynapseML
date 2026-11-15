@@ -5,97 +5,176 @@ package com.microsoft.azure.synapse.ml.logging
 
 import com.microsoft.azure.synapse.ml.build.BuildInfo
 import com.microsoft.azure.synapse.ml.logging.common.SASScrubber
+import com.microsoft.azure.synapse.ml.logging.fabric.CertifiedEventClient.logToCertifiedEvents
 import org.apache.spark.internal.Logging
-import spray.json.{DefaultJsonProtocol, RootJsonFormat, NullOptions}
+import org.apache.spark.sql.SparkSession
+import spray.json.DefaultJsonProtocol._
+import spray.json._
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 
-case class SynapseMLLogInfo(uid: String,
-                            className: String,
-                            method: String,
-                            buildVersion: String,
-                            columns: Option[Int] = None)
-
-object LogJsonProtocol extends DefaultJsonProtocol with NullOptions
-{
-  implicit val LogFormat: RootJsonFormat[SynapseMLLogInfo] = jsonFormat5(SynapseMLLogInfo)
+case class RequiredLogFields(uid: String,
+                             className: String,
+                             method: String) {
+  def toMap: Map[String, String] = {
+    Map(
+      "modelUid" -> uid,
+      "className" -> className,
+      "method" -> method,
+      "libraryVersion" -> BuildInfo.version,
+      "libraryName" -> "SynapseML",
+      "protocolVersion" -> "0.0.1" // which version of the logging protocol this schema is,
+    )
+  }
 }
 
-import com.microsoft.azure.synapse.ml.logging.LogJsonProtocol._
-import spray.json._
+case class RequiredErrorFields(errorType: String,
+                               errorMessage: String) {
+
+  def this(e: Exception) = {
+    this(e.getClass.getName, e.getMessage)
+  }
+
+  def toMap: Map[String, String] = {
+    Map(
+      "errorType" -> errorType,
+      // Exception.getMessage is null for exceptions constructed without one
+      // (e.g. new NullPointerException). spray-json's JsString rejects null,
+      // so serializing the payload would throw and mask the original error.
+      "errorMessage" -> Option(errorMessage).getOrElse("")
+    )
+  }
+}
+
 
 object SynapseMLLogging extends Logging {
 
+  val HadoopKeysToLog: mutable.Map[String, String] = mutable.Map(
+    "trident.artifact.id" -> "artifactId",
+    "trident.workspace.id" -> "workspaceId",
+    "trident.capacity.id" -> "capacityId",
+    "trident.artifact.workspace.id" -> "artifactWorkspaceId",
+    "trident.lakehouse.id" -> "lakehouseId",
+    "trident.activity.id" -> "livyId",
+    "trident.artifact.type" -> "artifactType",
+    "trident.tenant.id" -> "tenantId"
+  )
+
   private[ml] val LoggedClasses: mutable.Set[String] = mutable.HashSet[String]()
+
+  private[ml] def getHadoopConfEntries: Map[String, String] = {
+    SparkSession.getActiveSession.map { spark =>
+      // Session-derived rather than spark.sparkContext, which Databricks Unity Catalog standard
+      // access mode rejects by name. Matches Spark's own MLlib ReadWrite (SPARK-48909) and picks
+      // up session-level conf overrides that sparkContext.hadoopConfiguration misses.
+      // Intentionally uncached: these are session identity fields that a notebook can rebind
+      // mid-session, and the ~0.2ms cost is per fit/transform/construct call, never per row.
+      val hc = spark.sessionState.newHadoopConf()
+      //noinspection ScalaStyle
+      HadoopKeysToLog.flatMap { case (field, name) =>
+        Option(hc.get(field)).map { v: String => (name, v) }
+      }.toMap
+    }.getOrElse(Map())
+  }
 
   def logExternalInfo(uid: String,
                       className: String,
                       methodName: String,
                       extraFields: java.util.HashMap[String, String]): Unit = {
-    val mapToPrint = Map(
-      "uid" -> uid,
-      "className" -> className,
-      "methodName" -> methodName).++(extraFields.asScala.toMap)
+    val mapToPrint = RequiredLogFields(uid, className, methodName).toMap
+      .++(extraFields.asScala.toMap)
+      .++(getHadoopConfEntries)
 
     SynapseMLLogging.LoggedClasses.add(className)
-    logInfo(s"metrics/ ${mapToPrint.toJson.compactPrint}")
+    logInfo(mapToPrint.toJson.compactPrint)
   }
 
   def logMessage(message: String): Unit = {
     logInfo(SASScrubber.scrub(message))
   }
 
+  override def logDebug(msg: => String): Unit = super.logDebug(SASScrubber.scrub(msg))
 }
 
 trait SynapseMLLogging extends Logging {
 
   val uid: String
 
-  protected def logBase(methodName: String, columns: Option[Int]): Unit = {
-    logBase(SynapseMLLogInfo(
-      uid,
-      getClass.toString,
-      methodName,
-      BuildInfo.version,
-      columns))
+  protected def getPayload(methodName: String,
+                           numCols: Option[Int],
+                           executionSeconds: Option[Double],
+                           exception: Option[Exception]
+                          ): Map[String, String] = {
+    val info = RequiredLogFields(uid, getClass.toString, methodName).toMap
+      .++(SynapseMLLogging.getHadoopConfEntries)
+      .++(numCols.toSeq.map(nc =>
+        "dfInfo" -> Map("input" -> Map("numCols" -> nc.toString)).toJson.compactPrint
+      ).toMap)
+      .++(executionSeconds.toSeq.map(s => "executionSeconds" -> s.toString).toMap)
+      .++(exception.map(e => new RequiredErrorFields(e).toMap).getOrElse(Map()))
+
+    SynapseMLLogging.LoggedClasses.add(info("className"))
+    info
   }
 
-  protected def logBase(info: SynapseMLLogInfo): Unit = {
-    val message: String = info.toJson.compactPrint
-    SynapseMLLogging.LoggedClasses.add(info.className)
-    logInfo(s"metrics/ $message")
+  protected def logBase(methodName: String,
+                        numCols: Option[Int],
+                        executionSeconds: Option[Double],
+                        featureName: Option[String]
+                       ): Unit = {
+    logBase(getPayload(
+      methodName,
+      numCols,
+      executionSeconds,
+      None), featureName)
+  }
+
+  protected def logBase(info: Map[String, String], featureName: Option[String]): Unit = {
+    if (featureName.isDefined) {
+      Future {
+        logToCertifiedEvents(
+          info("libraryName"),
+          featureName.get
+        )
+      }.failed.map {
+        case e: Exception => logErrorBase("certifiedEventLogging", e)
+      }
+    }
+
+    logInfo(info.toJson.compactPrint)
   }
 
   protected def logErrorBase(methodName: String, e: Exception): Unit = {
-    val message: String = SynapseMLLogInfo(uid, getClass.toString, methodName, BuildInfo.version).toJson.compactPrint
-    logError(message, e)
+    logError(
+      getPayload(methodName, None, None, Some(e)).toJson.compactPrint,
+      e)
   }
 
-  def logClass(): Unit = {
-    logBase("constructor", None)
+  def logClass(featureName: String): Unit = {
+    logBase("constructor", None, None, Some(featureName))
   }
 
   def logFit[T](f: => T, columns: Int): T = {
-    logVerb("fit", f, columns)
-  }
-
-  def logTrain[T](f: => T, columns: Int): T = {
-    logVerb("train", f, columns)
+    logVerb("fit", f, Some(columns))
   }
 
   def logTransform[T](f: => T, columns: Int): T = {
-    logVerb("transform", f, columns)
+    logVerb("transform", f, Some(columns))
   }
-  def logVerb[T](verb: String, f: => T, columns: Int = -1): T = {
-    logBase(verb, if(columns == -1) None else Some(columns))
+
+  def logVerb[T](verb: String, f: => T, columns: Option[Int] = None): T = {
+    val startTime = System.nanoTime()
     try {
-      f
+      val ret = f
+      logBase(verb, columns, Some((System.nanoTime() - startTime) / 1e9), None)
+      ret
     } catch {
-      case e: Exception => {
+      case e: Exception =>
         logErrorBase(verb, e)
         throw e
-      }
     }
   }
 }

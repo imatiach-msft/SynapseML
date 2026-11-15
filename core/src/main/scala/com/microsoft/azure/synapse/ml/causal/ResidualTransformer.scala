@@ -5,7 +5,7 @@ package com.microsoft.azure.synapse.ml.causal
 
 import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts.HasOutputCol
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import org.apache.spark.ml.Transformer
 import org.apache.spark.ml.functions.vector_to_array
 import org.apache.spark.ml.linalg.SQLDataTypes
@@ -22,7 +22,7 @@ import org.apache.spark.sql.{DataFrame, Dataset}
 class ResidualTransformer(override val uid: String) extends Transformer
   with HasOutputCol with DefaultParamsWritable with Wrappable with SynapseMLLogging {
 
-  logClass()
+  logClass(FeatureNames.Causal)
 
   def this() = this(Identifiable.randomUID("ComputeResidualsTransformer"))
 
@@ -72,9 +72,9 @@ class ResidualTransformer(override val uid: String) extends Transformer
         s"${this.getClass.getSimpleName}: " +
           s"observedCol must be of type DoubleType, LongType, IntegerType or BooleanType but got $observedColType")
 
-      val convertedDataset = if (observedColType == BooleanType) {
+      val convertedDataset: DataFrame = if (observedColType == BooleanType) {
         dataset.withColumn(getObservedCol, col(getObservedCol).cast(IntegerType))
-      } else dataset
+      } else dataset.toDF()
 
       val predictedColDataType = convertedDataset.schema(getPredictedCol).dataType
 

@@ -58,6 +58,7 @@ htmlcov
 
 # Files created by remark-link
 package-lock.json
+!website/package-lock.json
 node_modules/
 .Rproj.user
 
@@ -75,6 +76,7 @@ website/.docusaurus
 null/
 metastore_db/
 .cache/
+.trunk/
 
 # pytorch_lightning logs
 **/lightning_logs/*
@@ -86,3 +88,11 @@ metastore_db/
 **/build/*
 **/dist/*
 **/*.egg-info/*
+
+*_local\.*
+condaenv.*.requirements.txt
+*.env
+
+# Dev-loop artifacts
+.dev-loop/
+.dev-loop-artifacts/

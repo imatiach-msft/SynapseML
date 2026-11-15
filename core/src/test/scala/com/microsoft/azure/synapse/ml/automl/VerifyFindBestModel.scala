@@ -9,6 +9,7 @@ import org.apache.spark.ml.Transformer
 import org.apache.spark.ml.util.MLReadable
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
+import org.apache.spark.sql.{functions => F}
 
 import java.io.File
 
@@ -45,7 +46,7 @@ class VerifyFindBestModel extends EstimatorFuzzing[FindBestModel]{
     bestModel.transform(dataset)
   }
 
-  test("Verify the best model can be saved") {
+  test("Verify the best model can be saved with AUC") {
     val dataset: DataFrame = createMockDataset
     val logisticRegressor = createLR.setLabelCol(mockLabelColumn)
     val model = logisticRegressor.fit(dataset)
@@ -58,6 +59,32 @@ class VerifyFindBestModel extends EstimatorFuzzing[FindBestModel]{
     val myModelFile = new File(tmpDir.toFile, "testEvalModel")
     bestModel.save(myModelFile.toString)
     assert(myModelFile.exists())
+  }
+
+  test("Verify the best model can be saved with areaUnderPR") {
+    val dataset: DataFrame = createMockDataset
+    val model = createLR.setLabelCol(mockLabelColumn).fit(dataset)
+    val bestModel = new FindBestModel()
+      .setModels(Array(model.asInstanceOf[Transformer], model.asInstanceOf[Transformer]))
+      .setEvaluationMetric(MetricConstants.AreaUnderPRMetric)
+      .fit(dataset)
+
+    val myModelFile = new File(tmpDir.toFile, "testEvalModelAreaUnderPR")
+    bestModel.save(myModelFile.toString)
+    assert(myModelFile.exists())
+  }
+
+  test("FindBestModel rejects invalid evaluation metrics") {
+    val dataset: DataFrame = createMockDataset
+    val model = createLR.setLabelCol(mockLabelColumn).fit(dataset)
+    val error = intercept[Exception] {
+      new FindBestModel()
+        .setModels(Array(model.asInstanceOf[Transformer]))
+        .setEvaluationMetric("averagePrecision")
+        .fit(dataset)
+    }
+
+    assert(error.getMessage === "Invalid evaluation metric")
   }
 
   test("Verify the best model metrics can be retrieved and are valid") {
@@ -89,6 +116,20 @@ class VerifyFindBestModel extends EstimatorFuzzing[FindBestModel]{
       .select(FindBestModel.MetricsCol)
       .collect()
       .foreach(value => assert(value.getDouble(0) >= 0.5))
+
+    val highestAUC = bestModel.getAllModelMetrics
+      .select(F.max(FindBestModel.MetricsCol))
+      .collect()
+      .head
+      .getDouble(0)
+
+    val bestModelsId = bestModel.getAllModelMetrics
+      .where(F.col(FindBestModel.MetricsCol) >= highestAUC)
+      .select(FindBestModel.ModelNameCol)
+      .collect()
+      .map(_.getString(0))
+
+    assert(bestModelsId.contains(bestModel.getBestModel.uid))
   }
 
   val reader: MLReadable[_] = FindBestModel

@@ -1,0 +1,101 @@
+// Copyright (C) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See LICENSE in project root for information.
+
+package com.microsoft.azure.synapse.ml.services.form
+
+import com.microsoft.azure.synapse.ml.core.test.fuzzing.{EstimatorFuzzing, TestObject}
+import org.apache.spark.SparkException
+import org.apache.spark.ml.util.MLReadable
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{ArrayType, DoubleType, StringType, StructType}
+
+class FormOntologyLearnerSuite extends EstimatorFuzzing[FormOntologyLearner] with FormRecognizerUtils {
+  override val compareDataInSerializationTest: Boolean = false
+
+
+  import spark.implicits._
+
+  lazy val analyzeInvoices: AnalyzeInvoices = new AnalyzeInvoices()
+    .setSubscriptionKey(cognitiveKey)
+    .setLocation(cognitiveLoc)
+    .setImageUrlCol("url")
+    .setOutputCol("invoices")
+    .setConcurrency(5)
+
+  lazy val ontologyLearner: FormOntologyLearner = new FormOntologyLearner()
+    .setInputCol("invoices")
+    .setOutputCol("unified_ontology")
+
+  lazy val urlDF: DataFrame = Seq(
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice115991.pdf",
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice119554.pdf",
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice12241.pdf"
+  ).toDF("url")
+
+  lazy val tableUrlDF: DataFrame = Seq(
+    "https://mmlspark.blob.core.windows.net/datasets/FormRecognizer/tables1.pdf"
+  ).toDF("url")
+
+  lazy val df: DataFrame = analyzeInvoices.transform(urlDF).cache()
+
+  test("Yields a reasonable error message when input rows dont contain documentResults") {
+    val analyzedDf = new AnalyzeLayout()
+      .setSubscriptionKey(cognitiveKey)
+      .setLocation(cognitiveLoc)
+      .setImageUrlCol("url")
+      .setOutputCol("layout")
+      .setConcurrency(5)
+      .transform(tableUrlDF)
+
+    assertThrows[SparkException] {
+      new FormOntologyLearner()
+        .setInputCol("layout")
+        .setOutputCol("unified_ontology")
+        .fit(analyzedDf)
+        .transform(analyzedDf)
+    }
+  }
+
+  test("Basic Usage") {
+
+    val targetSchema = new StructType()
+      .add("CustomerAddress", StringType)
+      .add("InvoiceTotal", DoubleType)
+      .add("CustomerName", StringType)
+      .add("VendorName", StringType)
+      .add("VendorAddressRecipient", StringType)
+      .add("InvoiceId", StringType)
+      .add("InvoiceDate", StringType)
+      .add("SubTotal", DoubleType)
+      .add("TotalTax", DoubleType)
+      .add("CustomerAddress", StringType)
+      .add("VendorAddress", StringType)
+      .add("ShippingAddress", StringType)
+      .add("CustomerAddressRecipient", StringType)
+      .add("Items", ArrayType(new StructType()
+        .add("ProductCode", StringType)
+        .add("Tax", DoubleType)
+        .add("Quantity", DoubleType)
+        .add("UnitPrice", DoubleType)
+        .add("Description", StringType)
+        .add("Amount", DoubleType)
+      ))
+
+    val newDF = ontologyLearner.fit(df).transform(df)
+    assert(newDF.select("unified_ontology.*").schema.fieldNames.toSet ===
+      targetSchema.fieldNames.toSet)
+    assert(
+      newDF.select("unified_ontology.Items").schema("Items")
+        .dataType.asInstanceOf[ArrayType].elementType.asInstanceOf[StructType].fieldNames.toSet ===
+        targetSchema("Items").dataType.asInstanceOf[ArrayType].elementType.asInstanceOf[StructType].fieldNames.toSet)
+    assert(newDF.select("unified_ontology.*").collect().head.getAs[Double]("TotalTax") === 67.13)
+  }
+
+  override def testObjects(): Seq[TestObject[FormOntologyLearner]] =
+    Seq(new TestObject(ontologyLearner, df))
+
+  override def reader: MLReadable[_] = FormOntologyLearner
+
+  override def modelReader: MLReadable[_] = FormOntologyTransformer
+
+}

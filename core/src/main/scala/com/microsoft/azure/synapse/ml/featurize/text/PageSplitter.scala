@@ -5,7 +5,7 @@ package com.microsoft.azure.synapse.ml.featurize.text
 
 import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts.{HasInputCol, HasOutputCol}
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import org.apache.spark.injections.UDFUtils
 import org.apache.spark.ml._
 import org.apache.spark.ml.param._
@@ -23,7 +23,7 @@ object PageSplitter extends DefaultParamsReadable[PageSplitter]
 class PageSplitter(override val uid: String)
   extends Transformer with HasInputCol with HasOutputCol
     with Wrappable with DefaultParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Featurize)
 
   def this() = this(Identifiable.randomUID("PageSplitter"))
 
@@ -39,8 +39,8 @@ class PageSplitter(override val uid: String)
 
   val minimumPageLength =
     new IntParam(this, "minimumPageLength",
-      "the the minimum number of characters " +
-        "to have on a page in order to preserve work boundaries")
+      "the minimum number of characters " +
+        "to have on a page in order to preserve word boundaries")
 
   def setMinimumPageLength(v: Int): this.type = set(minimumPageLength, v)
 

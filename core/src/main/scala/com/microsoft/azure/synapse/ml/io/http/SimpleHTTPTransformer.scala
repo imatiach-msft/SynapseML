@@ -5,7 +5,7 @@ package com.microsoft.azure.synapse.ml.io.http
 
 import com.microsoft.azure.synapse.ml.core.contracts.{HasInputCol, HasOutputCol}
 import com.microsoft.azure.synapse.ml.core.schema.DatasetExtensions.{findUnusedColumnName => newCol}
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import com.microsoft.azure.synapse.ml.param.TransformerParam
 import com.microsoft.azure.synapse.ml.stages.{DropColumns, FlattenBatch, HasMiniBatcher, Lambda}
 import org.apache.commons.io.IOUtils
@@ -14,7 +14,7 @@ import org.apache.spark.ml._
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.util.Identifiable
 import org.apache.spark.sql.expressions.UserDefinedFunction
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, coalesce}
 import org.apache.spark.sql.types.{StringType, StructType}
 import org.apache.spark.sql.{DataFrame, Dataset, Row}
 
@@ -30,6 +30,7 @@ trait HasErrorCol extends Params {
 }
 
 object ErrorUtils extends Serializable {
+
   val ErrorSchema: StructType = new StructType()
     .add("response", StringType, nullable = true)
     .add("status", StatusLineData.schema, nullable = true)
@@ -65,7 +66,7 @@ object ErrorUtils extends Serializable {
 class SimpleHTTPTransformer(val uid: String)
   extends Transformer with ConcurrencyParams with HasMiniBatcher with HasHandler
     with HasInputCol with HasOutputCol with ComplexParamsWritable with HasErrorCol with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   override protected lazy val pyInternalWrapper = true
 
@@ -128,13 +129,21 @@ class SimpleHTTPTransformer(val uid: String)
       .setHandler(getHandler)
       .setConcurrency(getConcurrency)
       .setConcurrentTimeout(get(concurrentTimeout))
+      .setTimeout(getTimeout)
       .setInputCol(parsedInputCol)
       .setOutputCol(unparsedOutputCol))
 
-    val parseErrors = Some(Lambda(_
-      .withColumn(getErrorCol, ErrorUtils.addErrorUDF(col(unparsedOutputCol)))
-      .withColumn(unparsedOutputCol, ErrorUtils.NullifyResponseUDF(col(getErrorCol), col(unparsedOutputCol)))
-    ))
+    val parseErrors = Some(Lambda(df => {
+      val serviceError = ErrorUtils.addErrorUDF(col(unparsedOutputCol))
+      // Preserve existing errorCol if present (e.g., from prep errors), otherwise use service error
+      val errorExpr = if (df.columns.contains(getErrorCol)) {
+        coalesce(col(getErrorCol), serviceError)
+      } else {
+        serviceError
+      }
+      df.withColumn(getErrorCol, errorExpr)
+        .withColumn(unparsedOutputCol, ErrorUtils.NullifyResponseUDF(col(getErrorCol), col(unparsedOutputCol)))
+    }))
 
     val outputParser =
       Some(getOutputParser

@@ -4,12 +4,12 @@
 package com.microsoft.azure.synapse.ml.stages
 
 import com.microsoft.azure.synapse.ml.codegen.Wrappable
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import com.microsoft.azure.synapse.ml.param.TransformerParam
 import org.apache.spark.ml.Transformer
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.util.{DefaultParamsReadable, DefaultParamsWritable, Identifiable}
-import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Dataset, Row}
@@ -35,7 +35,7 @@ trait MiniBatchBase extends Transformer with DefaultParamsWritable with Wrappabl
   def transform(dataset: Dataset[_]): DataFrame = {
     logTransform[DataFrame]({
       val outputSchema = transformSchema(dataset.schema)
-      implicit val outputEncoder: ExpressionEncoder[Row] = RowEncoder(outputSchema)
+      implicit val outputEncoder: ExpressionEncoder[Row] = ExpressionEncoder(outputSchema)
       dataset.toDF().mapPartitions { it =>
         if (it.isEmpty) {
           it
@@ -54,7 +54,7 @@ object DynamicMiniBatchTransformer extends DefaultParamsReadable[DynamicMiniBatc
 
 class DynamicMiniBatchTransformer(val uid: String)
     extends MiniBatchBase with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   val maxBatchSize: Param[Int] = new IntParam(
     this, "maxBatchSize", "The max size of the buffer")
@@ -78,7 +78,7 @@ object TimeIntervalMiniBatchTransformer extends DefaultParamsReadable[TimeInterv
 
 class TimeIntervalMiniBatchTransformer(val uid: String)
   extends MiniBatchBase with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   val maxBatchSize: Param[Int] = new IntParam(
     this, "maxBatchSize", "The max size of the buffer")
@@ -152,7 +152,7 @@ trait HasBatchSize extends Params {
 
 class FixedMiniBatchTransformer(val uid: String)
   extends MiniBatchBase with HasBatchSize with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   val maxBufferSize: Param[Int] = new IntParam(
     this, "maxBufferSize", "The max size of the buffer")
@@ -188,7 +188,7 @@ object FlattenBatch extends DefaultParamsReadable[FlattenBatch]
 
 class FlattenBatch(val uid: String)
     extends Transformer with Wrappable with DefaultParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("FlattenBatch"))
 
@@ -215,7 +215,7 @@ class FlattenBatch(val uid: String)
   override def transform(dataset: Dataset[_]): DataFrame = {
     logTransform[DataFrame]({
       val outputSchema = transformSchema(dataset.schema)
-      implicit val outputEncoder: ExpressionEncoder[Row] = RowEncoder(outputSchema)
+      implicit val outputEncoder: ExpressionEncoder[Row] = ExpressionEncoder(outputSchema)
 
       dataset.toDF().mapPartitions(it =>
         it.flatMap { rowOfLists =>

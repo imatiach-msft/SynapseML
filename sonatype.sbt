@@ -5,19 +5,21 @@ ThisBuild / sonatypeProjectHosting := Some(
 ThisBuild / homepage := Some(url("https://github.com/Microsoft/SynapseML"))
 ThisBuild / scmInfo := Some(
   ScmInfo(
-    url("https://github.com/Azure/SynapseML"),
-    "scm:git@github.com:Azure/SynapseML.git"
+    url("https://github.com/Microsoft/SynapseML"),
+    "scm:git@github.com:Microsoft/SynapseML.git"
   )
 )
 ThisBuild / developers := List(
-  Developer("mhamilton723", "Mark Hamilton",
-    "synapseml-support@microsoft.com", url("https://github.com/mhamilton723")),
-  Developer("imatiach-msft", "Ilya Matiach",
-    "synapseml-support@microsoft.com", url("https://github.com/imatiach-msft")),
-  Developer("drdarshan", "Sudarshan Raghunathan",
-    "synapseml-support@microsoft.com", url("https://github.com/drdarshan")),
+  Developer("ranadeepsingh", "Rana Singh",
+    "synapseml-support@microsoft.com", url("https://github.com/ranadeepsingh")),
+  Developer("BrendanWalsh", "Brendan Walsh",
+    "synapseml-support@microsoft.com", url("https://github.com/BrendanWalsh")),
   Developer("svotaw", "Scott Votaw",
-    "synapseml-support@microsoft.com", url("https://github.com/svotaw"))
+    "synapseml-support@microsoft.com", url("https://github.com/svotaw")),
+  Developer("eisber", "Markus Cozowicz",
+    "synapseml-support@microsoft.com", url("https://github.com/eisber")),
+  Developer("JessicaXYWang", "Jessica Wang",
+    "synapseml-support@microsoft.com", url("https://github.com/JessicaXYWang"))
 )
 
 ThisBuild / licenses += ("MIT", url("https://github.com/Microsoft/SynapseML/blob/master/LICENSE"))
@@ -31,7 +33,12 @@ pgpPassphrase := Some(Secrets.pgpPassword.toCharArray)
 pgpSecretRing := Secrets.pgpPrivateFile
 pgpPublicRing := Secrets.pgpPublicFile
 
-ThisBuild / publishTo := sonatypePublishToBundle.value
+if(Secrets.publishToFeed) {
+  ThisBuild / publishTo := Some("SynapseML_PublicPackages" at
+    "https://msdata.pkgs.visualstudio.com/A365/_packaging/SynapseML_PublicPackages/maven/v1")
+} else {
+  ThisBuild / publishTo := sonatypePublishToBundle.value
+}
 
 ThisBuild / dynverSonatypeSnapshots := true
 ThisBuild / dynverSeparator := "-"

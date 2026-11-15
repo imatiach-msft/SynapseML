@@ -15,6 +15,7 @@ import org.apache.spark.sql.internal.connector.{SimpleTableProvider, SupportsStr
 import org.apache.spark.sql.sources.{BaseRelation, CreatableRelationProvider, DataSourceRegister}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.sparkproject.dmg.pmml.False
 
 import java.util
 import scala.collection.JavaConverters._
@@ -69,7 +70,7 @@ class HTTPSinkProviderV2 extends SimpleTableProvider
   def shortName(): String = "HTTPv2"
 }
 
-/** Common methods used to create writes for the the console sink */
+/** Common methods used to create writes for the console sink */
 class HTTPWriter(schema: StructType, options: CaseInsensitiveStringMap)
   extends StreamingWrite with Logging {
 
@@ -107,8 +108,12 @@ private[streaming] class HTTPDataWriter(val partitionId: Int,
                                         val replyColIndex: Int,
                                         val name: String)
   extends DataWriter[InternalRow] with Logging {
-  logInfo(s"Creating writer on PID:$partitionId")
-  HTTPSourceStateHolder.getServer(name).commit(epochId - 1, partitionId)
+  logDebug(s"Creating writer on partition:$partitionId epoch $epochId")
+
+  val server = HTTPSourceStateHolder.getServer(name)
+  if (server.isContinuous) {
+    server.commit(epochId - 1, partitionId)
+  }
 
   private val ids: mutable.ListBuffer[(String, Int)] = new mutable.ListBuffer[(String, Int)]()
 

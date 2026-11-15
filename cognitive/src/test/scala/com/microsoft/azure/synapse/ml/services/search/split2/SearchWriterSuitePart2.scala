@@ -1,0 +1,367 @@
+// Copyright (C) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See LICENSE in project root for information.
+
+package com.microsoft.azure.synapse.ml.services.search.split2
+
+import com.microsoft.azure.synapse.ml.Secrets
+import com.microsoft.azure.synapse.ml.services.openai.OpenAIEmbedding
+import com.microsoft.azure.synapse.ml.services.search._
+import com.microsoft.azure.synapse.ml.services.search.split1.SearchWriterSuiteUtilities
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.types._
+
+trait AzureSearchKey {
+  lazy val azureSearchKey: String = sys.env.getOrElse("AZURE_SEARCH_KEY", Secrets.AzureSearchKey)
+}
+
+//scalastyle:off null
+class SearchWriterSuite extends SearchWriterSuiteUtilities {
+
+  import spark.implicits._
+
+  test("pipeline with openai embedding") {
+    val in = generateIndexName()
+
+    val df = Seq(
+      ("upload", "0", "this is the first sentence"),
+      ("upload", "1", "this is the second sentence")
+    ).toDF("searchAction", "id", "content")
+
+    val tdf = new OpenAIEmbedding()
+      .setSubscriptionKey(openAIAPIKey)
+      .setDeploymentName("text-embedding-ada-002")
+      .setCustomServiceName(openAIServiceName)
+      .setTextCol("content")
+      .setErrorCol("error")
+      .setOutputCol("vectorContent")
+      .transform(df)
+      .drop("error")
+
+    AzureSearchWriter.write(tdf,
+      Map(
+        "subscriptionKey" -> azureSearchKey,
+        "actionCol" -> "searchAction",
+        "serviceName" -> testServiceName,
+        "indexName" -> in,
+        "keyCol" -> "id",
+        "vectorCols" -> """[{"name": "vectorContent", "dimension": 1536}]"""
+      ))
+
+    retryWithBackoff(assertSize(in, 2))
+    val indexJson = retryWithBackoff(getIndexJsonFromExistingIndex(azureSearchKey, testServiceName, in))
+    assert(parseIndexJson(indexJson).fields.find(_.name == "vectorContent").get.vectorReference.nonEmpty)
+  }
+
+  test("Handle Azure Search index with scoring profiles") {
+    val indexJsonWithScoringProfile = """{"name": "test-index", "fields": [
+      {"name": "id", "type": "Edm.String", "key": true},
+      {"name": "date", "type": "Edm.DateTimeOffset"}
+    ], "scoringProfiles": [{
+      "name": "default_profiler", "functionAggregation": "sum",
+      "functions": [{"type": "freshness", "boost": 2.0, "fieldName": "date",
+        "interpolation": "constant", "freshness": {"boostingDuration": "P1D"}}]
+    }]}"""
+    val parsedIndex = parseIndexJson(indexJsonWithScoringProfile)
+    assert(parsedIndex.scoringProfiles.isDefined)
+    assert(parsedIndex.scoringProfiles.get.length == 1)
+    val scoringProfile = parsedIndex.scoringProfiles.get.head
+    assert(scoringProfile.name == "default_profiler")
+    assert(scoringProfile.functionAggregation.contains("sum"))
+    assert(scoringProfile.functions.isDefined)
+    assert(scoringProfile.functions.get.length == 1)
+    val function = scoringProfile.functions.get.head
+    assert(function.`type` == "freshness")
+    assert(function.boost.contains(2.0))
+    assert(function.fieldName == "date")
+    assert(function.freshness.isDefined)
+    assert(function.freshness.get.boostingDuration == "P1D")
+  }
+
+  test("Handle date fields correctly") {
+    val in = generateIndexName()
+    import java.sql.{Date, Timestamp}
+    val dateDF = Seq(
+      ("upload", "0", "item0", Date.valueOf("2025-05-20"), Timestamp.valueOf("2025-05-20 10:30:00")),
+      ("upload", "1", "item1", Date.valueOf("2025-05-21"), Timestamp.valueOf("2025-05-21 14:45:30")),
+      ("upload", "2", "item2", null, null)
+    ).toDF("searchAction", "id", "name", "createdDate", "lastModified")
+    val indexJson = s"""{"name": "$in", "fields": [
+      {"name": "id", "type": "Edm.String", "key": true, "facetable": false},
+      {"name": "name", "type": "Edm.String", "searchable": true, "facetable": false},
+      {"name": "createdDate", "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true, "facetable": false},
+      {"name": "lastModified", "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true, "facetable": false}
+    ]}"""
+    AzureSearchWriter.write(dateDF, Map(
+      "subscriptionKey" -> azureSearchKey, "actionCol" -> "searchAction",
+      "serviceName" -> testServiceName, "indexJson" -> indexJson))
+    retryWithBackoff(assertSize(in, 3))
+    val createdIndexJson = retryWithBackoff(getIndexJsonFromExistingIndex(azureSearchKey, testServiceName, in))
+    val parsedIndex = parseIndexJson(createdIndexJson)
+    assert(parsedIndex.fields.find(_.name == "createdDate").get.`type` == "Edm.DateTimeOffset")
+    assert(parsedIndex.fields.find(_.name == "lastModified").get.`type` == "Edm.DateTimeOffset")
+  }
+
+  test("Date field conversion handles different timezones correctly") {
+    val in = generateIndexName()
+    import org.apache.spark.sql.functions._
+    val dateDF = spark.createDataFrame(Seq(
+      ("upload", "0", "2025-05-20", "2025-05-20 10:30:00"),
+      ("upload", "1", "2025-05-21", "2025-05-21 14:45:30.123")
+    )).toDF("searchAction", "id", "dateStr", "timestampStr")
+      .withColumn("createdDate", to_date(col("dateStr")))
+      .withColumn("lastModified", to_timestamp(col("timestampStr")))
+      .drop("dateStr", "timestampStr")
+    val indexJson = s"""{"name": "$in", "fields": [
+      {"name": "id", "type": "Edm.String", "key": true},
+      {"name": "createdDate", "type": "Edm.DateTimeOffset"},
+      {"name": "lastModified", "type": "Edm.DateTimeOffset"}
+    ]}"""
+    AzureSearchWriter.write(dateDF, Map(
+      "subscriptionKey" -> azureSearchKey, "actionCol" -> "searchAction",
+      "serviceName" -> testServiceName, "indexJson" -> indexJson))
+    retryWithBackoff(assertSize(in, 2))
+  }
+
+  test("Handle GeoJSON GeographyPoint fields") {
+
+    val in = generateIndexName()
+    val schema = StructType(Seq(
+      StructField("searchAction", StringType),
+      StructField("id", StringType),
+      StructField("location", StructType(Seq(
+        StructField("type", StringType, nullable = false),
+        StructField("coordinates", ArrayType(DoubleType, containsNull = false), nullable = false)
+      )))
+    ))
+
+    val rows = Seq(
+      Row("upload", "0", Row("Point", Seq(-122.3493, 47.6205))),
+      Row("upload", "1", Row("Point", Seq(-122.3351, 47.6080)))
+    )
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(rows), schema)
+
+    val indexJson =
+      s"""
+         |{
+         |  "name": "$in",
+         |  "fields": [
+         |    { "name": "id", "type": "Edm.String", "key": true, "searchable": true, "retrievable": true },
+         |    { "name": "location", "type": "Edm.GeographyPoint", "searchable": false,
+         |     "filterable": true, "retrievable": true, "sortable": true }
+         |  ]
+         |}
+         |""".stripMargin
+
+    AzureSearchWriter.write(df,
+      Map(
+        "subscriptionKey" -> azureSearchKey,
+        "actionCol" -> "searchAction",
+        "serviceName" -> testServiceName,
+        "indexJson" -> indexJson
+      )
+    )
+
+    // Test parser
+    val createdIndexJson = retryWithBackoff(getIndexJsonFromExistingIndex(azureSearchKey, testServiceName, in))
+    val parsedIndex = parseIndexJson(createdIndexJson)
+    assert(parsedIndex.fields.find(_.name == "location").get.`type` == "Edm.GeographyPoint")
+
+    // Test writer
+    retryWithBackoff(assertSize(in, 2))
+
+  }
+
+  test("Handle GeoJSON GeographyPoint fields supplied as strings") {
+
+    val in = generateIndexName()
+    val df = spark.createDataFrame(Seq(
+      ("upload", "0", """{"type":"Point","coordinates":[-122.3493, 47.6205]}"""),
+      ("upload", "1", """{"type":"Point","coordinates":[-122.3351, 47.6080]}""")
+    )).toDF("searchAction", "id", "location")
+
+    val indexJson =
+      s"""
+         |{
+         |  "name": "$in",
+         |  "fields": [
+         |    { "name": "id", "type": "Edm.String", "key": true, "searchable": true, "retrievable": true },
+         |    { "name": "location", "type": "Edm.GeographyPoint", "searchable": false,
+         |     "filterable": true, "retrievable": true, "sortable": true }
+         |  ]
+         |}
+         |""".stripMargin
+
+    AzureSearchWriter.write(df,
+      Map(
+        "subscriptionKey" -> azureSearchKey,
+        "actionCol" -> "searchAction",
+        "serviceName" -> testServiceName,
+        "indexJson" -> indexJson
+      )
+    )
+
+    // With fatalErrors=true (default) any 400 from Azure Search becomes a thrown
+    // RuntimeException, so reaching this `assertSize` proves the documents were
+    // accepted as valid spatial objects -- a count of 2 is only achievable if the
+    // GeoJSON strings were correctly parsed and serialized as GeoJSON objects.
+    retryWithBackoff(assertSize(in, 2))
+
+  }
+
+  test("convertGeographyPointToStruct parses GeoJSON strings into structs") {
+    val df = spark.createDataFrame(Seq(
+      ("0", """{"type":"Point","coordinates":[-122.3493, 47.6205]}"""),
+      ("1", null)
+    )).toDF("id", "location")
+
+    val indexJson =
+      """
+        |{
+        |  "name": "unit-test-geo",
+        |  "fields": [
+        |    { "name": "id", "type": "Edm.String", "key": true },
+        |    { "name": "location", "type": "Edm.GeographyPoint" }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val converted = AzureSearchWriter.convertGeographyPointToStruct(df, indexJson)
+    val expected = StructType(Seq(
+      StructField("type", StringType),
+      StructField("coordinates", ArrayType(DoubleType))
+    ))
+    assert(converted.schema("location").dataType == expected)
+
+    val rows = converted.orderBy("id").collect()
+    val parsed = rows.head.getStruct(rows.head.fieldIndex("location"))
+    assert(parsed.getString(0) == "Point")
+    assert(parsed.getSeq[Double](1) == Seq(-122.3493, 47.6205))
+    assert(rows(1).isNullAt(rows(1).fieldIndex("location")))
+  }
+
+  test("convertGeographyPointToStruct leaves struct columns untouched") {
+    val schema = StructType(Seq(
+      StructField("id", StringType),
+      StructField("location", StructType(Seq(
+        StructField("type", StringType, nullable = false),
+        StructField("coordinates", ArrayType(DoubleType, containsNull = false), nullable = false)
+      )))
+    ))
+    val df = spark.createDataFrame(
+      spark.sparkContext.parallelize(Seq(Row("0", Row("Point", Seq(-122.3493, 47.6205))))),
+      schema
+    )
+
+    val indexJson =
+      """
+        |{
+        |  "name": "unit-test-geo",
+        |  "fields": [
+        |    { "name": "id", "type": "Edm.String", "key": true },
+        |    { "name": "location", "type": "Edm.GeographyPoint" }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val converted = AzureSearchWriter.convertGeographyPointToStruct(df, indexJson)
+    assert(converted.schema("location").dataType == schema("location").dataType)
+  }
+
+  test("convertGeographyPointToStruct fails fast on malformed GeoJSON instead of silently nulling") {
+    val df = spark.createDataFrame(Seq(
+      ("0", "{not valid json")
+    )).toDF("id", "location")
+
+    val indexJson =
+      """
+        |{
+        |  "name": "unit-test-geo",
+        |  "fields": [
+        |    { "name": "id", "type": "Edm.String", "key": true },
+        |    { "name": "location", "type": "Edm.GeographyPoint" }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val converted = AzureSearchWriter.convertGeographyPointToStruct(df, indexJson)
+    // FAILFAST surfaces parse errors when the row is materialized, not at plan time.
+    // The concrete wrapper type varies (SparkException, ExecutionException, or a bare
+    // RuntimeException when Spark folds the LocalRelation on the driver), so assert on
+    // the flattened cause chain instead.
+    val caught = intercept[Exception] {
+      converted.collect()
+    }
+    assert(causeChain(caught).contains("Malformed records are detected"),
+      s"expected a FAILFAST parse failure but got: ${causeChain(caught)}")
+  }
+
+  test("convertGeographyPointToStruct rejects valid JSON that is not a GeoJSON Point") {
+    val indexJson =
+      """
+        |{
+        |  "name": "unit-test-geo",
+        |  "fields": [
+        |    { "name": "id", "type": "Edm.String", "key": true },
+        |    { "name": "location", "type": "Edm.GeographyPoint" }
+        |  ]
+        |}
+        |""".stripMargin
+
+    // Every one of these is syntactically valid JSON (or blank), so Spark's FAILFAST parser
+    // accepts it and yields a partially-null struct. Without explicit shape validation these
+    // would be silently indexed as a null location instead of failing the write.
+    val wrongShapes = Seq(
+      """{"foo":"bar"}""",
+      """{"type":"Point"}""",
+      """{"coordinates":[-122.3493, 47.6205]}""",
+      """{"type":"Polygon","coordinates":[-122.3493, 47.6205]}""",
+      """{"type":"Point","coordinates":[-122.3493]}""",
+      """{"type":"Point","coordinates":[-122.3493, 47.6205, 12.0]}""",
+      """{"type":"Point","coordinates":[-122.3493, null]}""",
+      "",
+      "   "
+    )
+
+    wrongShapes.foreach { badValue =>
+      val df = spark.createDataFrame(Seq(("0", badValue))).toDF("id", "location")
+      val converted = AzureSearchWriter.convertGeographyPointToStruct(df, indexJson)
+      val caught = intercept[Exception] {
+        converted.collect()
+      }
+      val message = causeChain(caught)
+      assert(message.contains("not a valid GeoJSON Point"),
+        s"expected a GeoJSON validation failure for '$badValue' but got: $message")
+      assert(message.contains("location"),
+        s"expected the error to name the offending column for '$badValue'")
+    }
+  }
+
+  test("convertGeographyPointToStruct preserves nulls without raising") {
+    val df = spark.createDataFrame(Seq(
+      ("0", """{"type":"Point","coordinates":[-122.3493, 47.6205]}"""),
+      ("1", null),
+      ("2", null)
+    )).toDF("id", "location")
+
+    val indexJson =
+      """
+        |{
+        |  "name": "unit-test-geo",
+        |  "fields": [
+        |    { "name": "id", "type": "Edm.String", "key": true },
+        |    { "name": "location", "type": "Edm.GeographyPoint" }
+        |  ]
+        |}
+        |""".stripMargin
+
+    val rows = AzureSearchWriter.convertGeographyPointToStruct(df, indexJson).orderBy("id").collect()
+    assert(rows.length == 3)
+    assert(!rows.head.isNullAt(rows.head.fieldIndex("location")))
+    assert(rows(1).isNullAt(rows(1).fieldIndex("location")))
+    assert(rows(2).isNullAt(rows(2).fieldIndex("location")))
+  }
+
+  private def causeChain(t: Throwable): String =
+    Iterator.iterate(t)(_.getCause).takeWhile(_ != null).map(_.toString).mkString(" | ")
+
+}

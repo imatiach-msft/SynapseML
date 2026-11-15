@@ -7,7 +7,7 @@ import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts._
 import com.microsoft.azure.synapse.ml.core.metrics.{MetricConstants, MetricUtils}
 import com.microsoft.azure.synapse.ml.core.schema.{CategoricalUtilities, SchemaConstants, SparkSchema}
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import org.apache.spark.ml.Transformer
 import org.apache.spark.ml.param.ParamMap
 import org.apache.spark.ml.util.{DefaultParamsReadable, DefaultParamsWritable, Identifiable}
@@ -44,7 +44,7 @@ trait CPISParams extends Wrappable with DefaultParamsWritable
   */
 class ComputePerInstanceStatistics(override val uid: String) extends Transformer
   with CPISParams with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("ComputePerInstanceStatistics"))
 
@@ -54,7 +54,8 @@ class ComputePerInstanceStatistics(override val uid: String) extends Transformer
         MetricUtils.getSchemaInfo(
           dataset.schema,
           if (isDefined(labelCol)) Some(getLabelCol) else None,
-          getEvaluationMetric)
+          getEvaluationMetric,
+          dataset.sparkSession.conf.get("spark.sql.caseSensitive", "false").toBoolean)
 
       val dataframe = dataset.toDF()
 
@@ -71,7 +72,7 @@ class ComputePerInstanceStatistics(override val uid: String) extends Transformer
             if (levels.get.length > 2) levels.get.length else 2
           } else {
             // Otherwise compute unique levels
-            dataset.select(col(labelColumnName).cast(DoubleType)).rdd.distinct().count().toInt
+            dataset.select(col(labelColumnName).cast(DoubleType)).distinct().count().toInt
           }
 
         val logLossFunc = udf((scoredLabel: Double, scores: org.apache.spark.ml.linalg.Vector) =>

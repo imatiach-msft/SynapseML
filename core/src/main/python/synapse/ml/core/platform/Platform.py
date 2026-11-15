@@ -5,11 +5,13 @@ from pyspark.sql import DataFrame
 
 PLATFORM_SYNAPSE_INTERNAL = "synapse_internal"
 PLATFORM_SYNAPSE = "synapse"
+PLATFORM_FABRIC_PYTHON = "fabric_python_env"
 PLATFORM_BINDER = "binder"
 PLATFORM_DATABRICKS = "databricks"
 PLATFORM_UNKNOWN = "unknown"
 SECRET_STORE = "mmlspark-build-keys"
 SYNAPSE_PROJECT_NAME = "Microsoft.ProjectArcadia"
+FABRIC_URL = "fabric.microsoft.com"
 
 
 def current_platform():
@@ -26,6 +28,8 @@ def current_platform():
         return PLATFORM_DATABRICKS
     elif os.environ.get("BINDER_LAUNCH_HOST", None) is not None:
         return PLATFORM_BINDER
+    elif FABRIC_URL in os.environ.get("MSNOTEBOOKUTILS_SPARK_TRIDENT_PBIHOST", ""):
+        return PLATFORM_FABRIC_PYTHON
     else:
         return PLATFORM_UNKNOWN
 
@@ -46,26 +50,45 @@ def running_on_databricks():
     return current_platform() is PLATFORM_DATABRICKS
 
 
-def find_secret(secret_name, keyvault=SECRET_STORE, override=None):
-    if override is not None:
-        return override
+def running_on_fabric_python():
+    return current_platform() is PLATFORM_FABRIC_PYTHON
 
-    if running_on_synapse() or running_on_synapse_internal():
-        from notebookutils.mssparkutils.credentials import getSecret
 
-        return getSecret(keyvault, secret_name)
-    elif running_on_databricks():
-        from pyspark.sql import SparkSession
-        from pyspark.dbutils import DBUtils
+def find_secret(secret_name, keyvault):
+    try:
+        if running_on_synapse():
+            from notebookutils.mssparkutils.credentials import getSecret
 
-        spark = SparkSession.builder.getOrCreate()
-        dbutils = DBUtils(spark)
-        return dbutils.secrets.get(scope=keyvault, key=secret_name)
-    else:
+            return getSecret(keyvault, secret_name)
+        elif running_on_synapse_internal() or running_on_fabric_python():
+            from notebookutils.mssparkutils.credentials import getSecret
+
+            keyVaultURL = f"https://{keyvault}.vault.azure.net/"
+            return getSecret(keyVaultURL, secret_name)
+        elif running_on_databricks():
+            from pyspark.sql import SparkSession
+            from pyspark.dbutils import DBUtils
+
+            spark = SparkSession.builder.getOrCreate()
+            dbutils = DBUtils(spark)
+            return dbutils.secrets.get(scope=keyvault, key=secret_name)
+        else:
+            raise RuntimeError("get secret is not supported on this platform.")
+    except:
         raise RuntimeError(
-            f"Could not find {secret_name} in keyvault or overrides. If you are running this demo "
-            f"and would like to manually specify your key for Azure KeyVault or Databricks Secrets,"
-            f'please add the override="YOUR_KEY_HERE" to the arguments of the find_secret() method'
+            f"Could not find {secret_name} in keyvault {keyvault}. "
+            f"If you are trying to use the mmlspark-build-keys keyvault, you can't! "
+            f"You need to make your own keyvault with secrets or replace this call with a string. "
+            f"Make sure your notebook has access to a "
+            f"keyvault named {keyvault} which contains a secret named {secret_name}. "
+            f"On synapse, use a linked service keyvault, "
+            f"on databricks use their secrets management sdk, "
+            f"on fabric make sure your azure identity can access your azure keyvault. "
+            f"If you want to avoid making a keyvault, replace this call to find secret with your secret as a string "
+            f"like my_secret = 'jdiej38dnal.....'. Note that this has "
+            f"security implications for publishing and sharing notebooks! "
+            f"Please see the documentation for more information. "
+            f"https://microsoft.github.io/SynapseML/docs/Get%20Started/Set%20up%20Cognitive%20Services/"
         )
 
 

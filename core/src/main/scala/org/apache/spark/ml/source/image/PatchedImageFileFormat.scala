@@ -13,7 +13,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.ml.image.ImageSchema
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.encoders.RowEncoder
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.sources._
@@ -98,7 +98,7 @@ class PatchedImageFileFormat extends ImageFileFormat with Serializable with Logg
         Iterator(emptyUnsafeRow)
       } else {
         val origin = file.filePath
-        val path = new Path(origin)
+        val path = new Path(origin.toString())
         val fs = path.getFileSystem(broadcastedHadoopConf.value.value)
         val stream = fs.open(path)
         val bytes = try {
@@ -107,17 +107,18 @@ class PatchedImageFileFormat extends ImageFileFormat with Serializable with Logg
           IOUtils.close(stream)
         }
 
-        val resultOpt = catchFlakiness(5)(ImageSchema.decode(origin, bytes))  //scalastyle:ignore magic.number
+        val resultOpt = catchFlakiness(5)( //scalastyle:ignore magic.number
+          ImageSchema.decode(origin.toString(), bytes))
         val filteredResult = if (imageSourceOptions.dropInvalid) {
           resultOpt.toIterator
         } else {
-          Iterator(resultOpt.getOrElse(ImageSchema.invalidImageRow(origin)))
+          Iterator(resultOpt.getOrElse(ImageSchema.invalidImageRow(origin.toString())))
         }
 
         if (requiredSchema.isEmpty) {
           filteredResult.map(_ => emptyUnsafeRow)
         } else {
-          val converter = RowEncoder(requiredSchema)
+          val converter = ExpressionEncoder(requiredSchema)
           filteredResult.map(row => converter.createSerializer()(row))
         }
       }

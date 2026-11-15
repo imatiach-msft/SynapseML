@@ -1,0 +1,31 @@
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 1 * * 0"
+    displayName: Weekly ACR Cleanup
+    always: true
+    branches:
+      include:
+        - master
+
+pool:
+  vmImage: 'ubuntu-22.04'
+
+variables:
+  azureServiceConnection: 'synapseml-clean-acr'
+
+steps:
+  - checkout: self
+    fetchDepth: 1
+    fetchTags: false
+
+  - task: AzureCLI@2
+    displayName: 'Clean ACR'
+    inputs:
+      azureSubscription: $(azureServiceConnection)
+      scriptLocation: inlineScript
+      scriptType: bash
+      inlineScript: |
+        set -euo pipefail
+        python tools/acr/clean_acr.py

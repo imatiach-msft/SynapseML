@@ -1,13 +1,13 @@
 // Copyright (C) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See LICENSE in project root for information.
 
-import spray.json.DefaultJsonProtocol._
-import spray.json._
+import spray.json.*
+import spray.json.DefaultJsonProtocol.*
 
 import java.io.{File, IOException, PrintWriter}
 import java.util.Base64
 import scala.io.Source
-import scala.sys.process._
+import scala.sys.process.*
 
 //scalastyle:off field.name
 object Secrets {
@@ -18,11 +18,19 @@ object Secrets {
 
   lazy private val publishingEnabled: Boolean = sys.env.getOrElse(EnablePublishEnvVar, "false").toBoolean
 
-  protected def exec(command: String): String = {
-    val os = sys.props("os.name").toLowerCase
-    os match {
-      case x if x contains "windows" => Seq("cmd", "/C") ++ Seq(command) !!
-      case _ => command !!
+  protected def exec(command: String, maxRetries: Int = 2, attempt: Int = 0): String = {
+    val osCommand = sys.props("os.name").toLowerCase match {
+      case x if x contains "windows" => Seq("cmd", "/C") ++ Seq(command)
+      case _ => Seq("bash", "-c", command)
+    }
+
+    try {
+      osCommand.!!
+    } catch {
+      case e: RuntimeException if attempt < maxRetries =>
+        println(s"Retrying after error: $e")
+        Thread.sleep(1000)
+        exec(command, maxRetries, attempt + 1)
     }
   }
 
@@ -144,7 +152,7 @@ object Secrets {
   def getSecret(env_var: String, name: String): String = {
     if (publishingEnabled) findAndCacheSecret(env_var, name)
     else {
-      println(s"[warn] Secret $name not downloaded. Set $EnablePublishEnvVar=true to enable publishing.")
+      println(s"[info] Secret $name not downloaded. Set $EnablePublishEnvVar=true to enable publishing.")
       ""
     }
   }
@@ -152,20 +160,24 @@ object Secrets {
   def getPgpSecretFile(name: String, env_var: String): File = {
     if (publishingEnabled) getOrCreatePgpSecretFile(name, env_var)
     else {
-      println(s"[warn] Secret $name not downloaded. Set $EnablePublishEnvVar=true to enable publishing.")
+      println(s"[info] Secret $name not downloaded. Set $EnablePublishEnvVar=true to enable publishing.")
       new File("")
     }
   }
 
+  lazy val adoFeedToken: String = getSecret(ADOFeedTokenEnvVarName, ADOFeedTokenSecretName)
   lazy val nexusUsername: String = getSecret(NexusUsernameEnvVarName, NexusUsernameSecretName)
   lazy val nexusPassword: String = getSecret(NexusPasswordEnvVarName, NexusPasswordSecretName)
   lazy val pgpPassword: String = getSecret(PgpPasswordEnvVarName, PgpPasswordSecretName)
-  lazy val storageKey: String = getSecret(StorageKeyEnvVarName, StorageKeySecretName)
   lazy val pypiApiToken: String = getSecret(PypiApiEnvVarName, PypiApiSecretName)
 
   lazy val pgpPrivateFile: File = getPgpSecretFile(PgpPrivateSecretName, PgpPrivateEnvVarName)
   lazy val pgpPublicFile: File = getPgpSecretFile(PgpPublicSecretName, PgpPublicEnvVarName)
 
+  lazy val publishToFeed: Boolean = sys.env.getOrElse(PublishToFeed, "false").toBoolean
+
+  val ADOFeedTokenSecretName: String = "ado-feed-token"
+  val ADOFeedTokenEnvVarName: String = "ADO-FEED-TOKEN"
   val NexusUsernameSecretName: String = "nexus-un"
   val NexusUsernameEnvVarName: String = "NEXUS-UN"
   val NexusPasswordSecretName: String = "nexus-pw"
@@ -176,8 +188,7 @@ object Secrets {
   val PgpPrivateEnvVarName: String = "PGP-PRIVATE"
   val PgpPublicSecretName: String = "pgp-public"
   val PgpPublicEnvVarName: String = "PGP-PUBLIC"
-  val StorageKeySecretName: String = "storage-key"
-  val StorageKeyEnvVarName: String = "STORAGE-KEY"
   val PypiApiSecretName: String = "pypi-api-token"
   val PypiApiEnvVarName: String = "PYPI-API-TOKEN"
+  val PublishToFeed: String = "PUBLISH-TO-FEED"
 }

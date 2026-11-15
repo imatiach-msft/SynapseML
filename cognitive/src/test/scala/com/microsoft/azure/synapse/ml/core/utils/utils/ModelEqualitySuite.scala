@@ -3,7 +3,7 @@
 
 package com.microsoft.azure.synapse.ml.core.utils.utils
 
-import com.microsoft.azure.synapse.ml.cognitive.text.TextSentiment
+import com.microsoft.azure.synapse.ml.services.text.TextSentiment
 import com.microsoft.azure.synapse.ml.core.env.FileUtilities.join
 import com.microsoft.azure.synapse.ml.core.test.base.TestBase
 import com.microsoft.azure.synapse.ml.core.utils.ModelEquality
@@ -11,6 +11,33 @@ import com.microsoft.azure.synapse.ml.stages.DropColumns
 
 class ModelEqualitySuite extends TestBase {
   spark
+
+  test("jaccardSimilarity grades partial overlap") {
+    // Sets of whole strings would collapse this to a 1.0/0.0 equality check.
+    assert(ModelEquality.jaccardSimilarity("abcd", "abcd") === 1.0)
+    assert(ModelEquality.jaccardSimilarity("abcd", "wxyz") === 0.0)
+    val partial = ModelEquality.jaccardSimilarity("the quick brown fox", "the quick brown cat")
+    assert(partial > 0.0 && partial < 1.0)
+    assert(partial > ModelEquality.jaccardSimilarity("the quick brown fox", "entirely unlike"))
+  }
+
+  test("jaccardSimilarity is case insensitive and symmetric") {
+    assert(ModelEquality.jaccardSimilarity("Hello World", "hello world") === 1.0)
+    assert(ModelEquality.jaccardSimilarity("kitten", "sitting")
+      === ModelEquality.jaccardSimilarity("sitting", "kitten"))
+    assert(ModelEquality.jaccardSimilarity("", "") === 1.0)
+  }
+
+  test("jaccardSimilarity handles strings shorter than one bigram") {
+    // sliding(2) keeps the short final window, so a 1-char string yields Set(char)
+    // rather than the empty set. Distinct 1-char strings must therefore score 0.0,
+    // not fall into the both-empty shortcut.
+    assert(ModelEquality.jaccardSimilarity("a", "b") === 0.0)
+    assert(ModelEquality.jaccardSimilarity("a", "a") === 1.0)
+    assert(ModelEquality.jaccardSimilarity("", "a") === 0.0)
+    assert(ModelEquality.jaccardSimilarity("a", "") === 0.0)
+    assert(ModelEquality.jaccardSimilarity("", "") === 1.0)
+  }
 
   test("Complex param equality") {
     val m1 = new TextSentiment().setLocation("eastus")
@@ -21,7 +48,7 @@ class ModelEqualitySuite extends TestBase {
     val p2 = join(tmpDir.toString, "1_m2.model").toString
     m1.write.overwrite().save(p1)
     m2.write.overwrite().save(p2)
-    ModelEquality.assertEqual("com.microsoft.azure.synapse.ml.cognitive.text.TextSentiment", p1, p2)
+    ModelEquality.assertEqual("com.microsoft.azure.synapse.ml.services.text.TextSentiment", p1, p2)
   }
 
   test("Basic equality") {

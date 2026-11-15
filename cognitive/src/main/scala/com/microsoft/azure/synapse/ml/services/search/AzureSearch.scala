@@ -1,0 +1,614 @@
+// Copyright (C) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See LICENSE in project root for information.
+
+package com.microsoft.azure.synapse.ml.services.search
+
+import com.microsoft.azure.synapse.ml.services.search.AzureSearchProtocol._
+import com.microsoft.azure.synapse.ml.services.{CognitiveServicesBase, HasCognitiveServiceInput,
+  HasInternalJsonOutputParser, HasServiceParams}
+import com.microsoft.azure.synapse.ml.io.http.{ErrorUtils, SimpleHTTPTransformer}
+import com.microsoft.azure.synapse.ml.io.powerbi.StreamMaterializer
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
+import com.microsoft.azure.synapse.ml.stages.{FixedMiniBatchTransformer, HasBatchSize, Lambda}
+import org.apache.http.Consts
+import org.apache.http.entity.{AbstractHttpEntity, ContentType, StringEntity}
+import org.apache.log4j.{LogManager, Logger}
+import org.apache.spark.injections.UDFUtils
+import org.apache.spark.internal.{Logging => SLogging}
+import org.apache.spark.ml.param._
+import org.apache.spark.ml.util._
+import org.apache.spark.ml.{ComplexParamsReadable, NamespaceInjections, PipelineModel}
+import org.apache.spark.ml.linalg.SQLDataTypes.VectorType
+import org.apache.spark.ml.functions.vector_to_array
+import org.apache.spark.sql.functions.{col, concat, expr, forall, from_json, lit, raise_error, size,
+  struct, to_json, to_utc_timestamp, date_format, when}
+import org.apache.spark.sql.streaming.DataStreamWriter
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.{DataFrame, Dataset, Row}
+import spray.json._
+
+import scala.collection.JavaConverters._
+
+object AddDocuments extends ComplexParamsReadable[AddDocuments] with Serializable
+
+trait HasActionCol extends HasServiceParams {
+
+  val actionCol = new Param[String](this, "actionCol",
+    s"""
+       |You can combine actions, such as an upload and a delete, in the same batch.
+       |
+       |upload: An upload action is similar to an 'upsert'
+       |where the document will be inserted if it is new and updated/replaced
+       |if it exists. Note that all fields are replaced in the update case.
+       |
+       |merge: Merge updates an existing document with the specified fields.
+       |If the document doesn't exist, the merge will fail. Any field
+       |you specify in a merge will replace the existing field in the document.
+       |This includes fields of type Collection(Edm.String). For example, if
+       |the document contains a field 'tags' with value ['budget'] and you execute
+       |a merge with value ['economy', 'pool'] for 'tags', the final value
+       |of the 'tags' field will be ['economy', 'pool'].
+       | It will not be ['budget', 'economy', 'pool'].
+       |
+       |mergeOrUpload: This action behaves like merge if a document
+       | with the given key already exists in the index.
+       | If the document does not exist, it behaves like upload with a new document.
+       |
+       |delete: Delete removes the specified document from the index.
+       | Note that any field you specify in a delete operation,
+       | other than the key field, will be ignored. If you want to
+       |  remove an individual field from a document, use merge
+       |  instead and simply set the field explicitly to null.
+    """.stripMargin.replace("\n", " ").replace("\r", " "))
+
+  def setActionCol(v: String): this.type = set(actionCol, v)
+
+  def getActionCol: String = $(actionCol)
+
+}
+
+trait HasIndexName extends HasServiceParams {
+
+  val indexName = new Param[String](this, "indexName", "")
+
+  def setIndexName(v: String): this.type = set(indexName, v)
+
+  def getIndexName: String = $(indexName)
+
+}
+
+trait HasServiceName extends HasServiceParams {
+
+  val serviceName = new Param[String](this, "serviceName", "")
+
+  def setServiceName(v: String): this.type = set(serviceName, v)
+
+  def getServiceName: String = $(serviceName)
+
+}
+
+class AddDocuments(override val uid: String) extends CognitiveServicesBase(uid)
+  with HasCognitiveServiceInput with HasInternalJsonOutputParser
+  with HasActionCol with HasServiceName with HasIndexName with HasBatchSize
+  with SynapseMLLogging {
+  logClass(FeatureNames.AiServices.Search)
+
+  def this() = this(Identifiable.randomUID("AddDocuments"))
+
+  def urlPath: String = ""
+
+  setDefault(actionCol -> "@search.action")
+
+  override val subscriptionKeyHeaderName = "api-key"
+
+  setDefault(batchSize -> 100)
+
+  override protected def getInternalTransformer(schema: StructType): PipelineModel = {
+    val stages = Array(
+      Lambda(df =>
+        df.withColumnRenamed(getActionCol, "@search.action")
+          .select(struct("*").alias("arr"))
+      ),
+      new FixedMiniBatchTransformer().setBuffered(false).setBatchSize(getBatchSize),
+      Lambda(df =>
+        df.select(struct(
+          to_json(struct(col("arr").alias("value")), Map("charset" -> "UTF-8"))
+        ).alias("input"))
+      ),
+      new SimpleHTTPTransformer()
+        .setInputCol("input")
+        .setOutputCol(getOutputCol)
+        .setInputParser(getInternalInputParser(schema))
+        .setOutputParser(getInternalOutputParser(schema))
+        .setHandler(handlingFunc _)
+        .setConcurrency(getConcurrency)
+        .setConcurrentTimeout(get(concurrentTimeout))
+        .setErrorCol(getErrorCol)
+    )
+
+    NamespaceInjections.pipelineModel(stages)
+  }
+
+  override def transform(dataset: Dataset[_]): DataFrame = {
+    logTransform[DataFrame]({
+      if (get(url).isEmpty) {
+        setUrl(s"https://$getServiceName.search.windows.net" +
+          s"/indexes/$getIndexName/docs/index?api-version=${AzureSearchAPIConstants.DefaultAPIVersion}")
+      }
+      super.transform(dataset)
+    }, dataset.columns.length)
+  }
+
+  override def prepareEntity: Row => Option[AbstractHttpEntity] = row =>
+    Some(new StringEntity(row.getString(0), ContentType.create("text/plain", Consts.UTF_8)))
+
+  override def responseDataType: DataType = ASResponses.schema
+}
+
+object AzureSearchWriter extends IndexParser with IndexJsonGetter with SLogging {
+
+  val Logger: Logger = LogManager.getRootLogger
+
+  private def checkForErrors(
+                              fatal: Boolean)(errorRow: Row, inputRow: Row): Option[Row] = {
+    Option(errorRow).map { r =>
+      val message = s"Service Exception:\n\t ${r.toString()} \n for input:\n\t ${inputRow.toString()}"
+      if (fatal) {
+        throw new RuntimeException(message)
+      } else {
+        logWarning(message)
+        r
+      }
+    }
+  }
+
+  private def filterOutNulls(df: DataFrame, collectionColName: String): DataFrame = {
+    df.withColumn(collectionColName, expr(s"filter($collectionColName, x -> x is not null)"))
+  }
+
+  private def convertFields(fields: Seq[StructField],
+                            keyCol: String,
+                            searchActionCol: String,
+                            vectorCols: Option[Seq[VectorColParams]],
+                            prefix: Option[String]): Seq[IndexField] = {
+    fields.filterNot(_.name == searchActionCol).map { sf =>
+      val fullName = prefix.map(_ + sf.name).getOrElse(sf.name)
+      val isVector = vectorCols.exists(_.exists(_.name == fullName))
+      val (innerType, _) = sparkTypeToEdmType(sf.dataType)
+      IndexField(
+        sf.name,
+        innerType,
+        None, None, None, None, None,
+        if (keyCol == fullName) Some(true) else None,
+        None, None, None, None,
+        structFieldToSearchFields(sf.dataType,
+          keyCol, searchActionCol, None, prefix = Some(prefix.getOrElse("") + sf.name + ".")),
+        if (isVector) vectorCols.get.find(_.name == fullName).map(_.dimension) else None,
+        if (isVector) Some(AzureSearchAPIConstants.VectorConfigName) else None
+      )
+    }
+  }
+
+  private def structFieldToSearchFields(schema: DataType,
+                                        keyCol: String,
+                                        searchActionCol: String,
+                                        vectorCols: Option[Seq[VectorColParams]],
+                                        prefix: Option[String] = None
+                                       ): Option[Seq[IndexField]] = {
+    schema match {
+      case StructType(fields) => Some(convertFields(fields, keyCol, searchActionCol, vectorCols, prefix))
+      // TODO: Support vector search in nested fields
+      case ArrayType(StructType(fields), _) => Some(convertFields(fields, keyCol, searchActionCol, None, prefix))
+      case _ => None
+    }
+  }
+
+  private def parseVectorColsJson(str: String): Seq[VectorColParams] = {
+    str.parseJson.convertTo[Seq[VectorColParams]]
+  }
+
+  /**
+   * Converts date and timestamp columns to ISO8601 format strings as required by Azure AI Search.
+   *
+   * @param df DataFrame with potential date/time columns
+   * @param indexJson JSON string containing the index schema
+   * @return DataFrame with date/time columns converted to ISO8601 strings
+   */
+  private def convertDateTimeToISO8601(df: DataFrame, indexJson: String): DataFrame = {
+    import org.apache.spark.sql.functions.{date_format, when, to_utc_timestamp}
+    val indexFields = parseIndexJson(indexJson).fields
+    val dateFields = indexFields.filter(_.`type` == "Edm.DateTimeOffset").map(_.name)
+    dateFields.foldLeft(df) { (currentDF, fieldName) =>
+      if (currentDF.columns.contains(fieldName)) {
+        val fieldType = currentDF.schema(fieldName).dataType
+        fieldType match {
+          case TimestampType =>
+            // Convert to UTC first, then format
+            currentDF.withColumn(fieldName,
+              when(col(fieldName).isNotNull,
+                date_format(to_utc_timestamp(col(fieldName), "UTC"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+              )
+            )
+          case DateType =>
+            // DateType doesn't have timezone info, treat as UTC midnight
+            currentDF.withColumn(fieldName,
+              when(col(fieldName).isNotNull,
+                date_format(col(fieldName), "yyyy-MM-dd'T'00:00:00.000'Z'")
+              )
+            )
+          case StringType =>
+            // Already a string, assume it's properly formatted
+            currentDF
+          case _ =>
+            throw new IllegalArgumentException(
+              s"Field $fieldName is defined as Edm.DateTimeOffset in index but has type $fieldType in DataFrame"
+            )
+        }
+      } else {
+        currentDF
+      }
+    }
+  }
+
+  /**
+   * Converts string columns containing GeoJSON to the proper struct shape required for
+   * Azure Search `Edm.GeographyPoint` fields.
+   *
+   * Azure AI Search expects spatial values to be sent as a GeoJSON object
+   * (e.g. `{"type":"Point","coordinates":[lon, lat]}`), not as a JSON-encoded string.
+   * Users frequently have their GeoJSON readily available as a string column, and
+   * passing it as a `StringType` previously caused a `400 Bad Request`
+   * (see [[https://github.com/microsoft/SynapseML/issues/2420]]) because the writer
+   * JSON-escaped the entire string.
+   *
+   * For each '''top-level''' field declared as `Edm.GeographyPoint` in the index, if the
+   * corresponding DataFrame column is a `StringType`, parse it into the canonical
+   * `StructType(type: StringType, coordinates: ArrayType(DoubleType))` so that downstream
+   * `to_json` emits a proper GeoJSON object. Columns that are already structured are
+   * left as-is. GeographyPoint fields nested inside complex types are not auto-converted
+   * (mirrors the existing top-level-only handling in `convertDateTimeToISO8601`).
+   *
+   * Parsing uses Spark's `FAILFAST` mode so malformed GeoJSON surfaces an explicit
+   * exception instead of being silently coerced to `null` and shipped to Azure Search.
+   * `FAILFAST` alone only rejects syntactically invalid JSON, so the parsed value is
+   * additionally validated to be a genuine GeoJSON Point (`type == "Point"` with exactly
+   * two non-null coordinates). Anything else raises an error naming the column and the
+   * offending value rather than indexing a silently-null location. NULL inputs are
+   * preserved as NULL.
+   *
+   * @param df DataFrame with potential GeographyPoint columns
+   * @param indexJson JSON string containing the index schema
+   * @return DataFrame with string GeographyPoint columns converted to GeoJSON structs
+   */
+  private[ml] def convertGeographyPointToStruct(df: DataFrame, indexJson: String): DataFrame = {
+   // Derived from edmTypeToSparkType so the parsed shape can never drift from the type
+   // checkSchemaParity expects for Edm.GeographyPoint
+   val geoStructType = edmTypeToSparkType(GeographyPointEdmType, None)
+   val parseOptions = Map("mode" -> "FAILFAST")
+   val geoFields = parseIndexJson(indexJson).fields
+     .filter(_.`type` == GeographyPointEdmType)
+     .map(_.name)
+   geoFields.foldLeft(df) { (currentDF, fieldName) =>
+     if (currentDF.columns.contains(fieldName)) {
+       currentDF.schema(fieldName).dataType match {
+         case StringType =>
+           val parsed = from_json(col(fieldName), geoStructType, parseOptions)
+           val coordinates = parsed.getField("coordinates")
+           val isValidPoint = parsed.getField("type") === lit("Point") &&
+             coordinates.isNotNull &&
+             size(coordinates) === lit(GeographyPointCoordinateCount) &&
+             forall(coordinates, c => c.isNotNull)
+           val invalidValueError = raise_error(concat(
+             lit(s"AzureSearchWriter: column '$fieldName' is mapped to an " +
+               s"$GeographyPointEdmType field but the value is not a valid GeoJSON Point " +
+               """(expected {"type":"Point","coordinates":[longitude,latitude]}). """ +
+               "Offending value: "),
+             col(fieldName)))
+           currentDF.withColumn(fieldName,
+             when(col(fieldName).isNull || isValidPoint, parsed)
+               .otherwise(invalidValueError.cast(geoStructType))
+           )
+         case _ =>
+           // Already a struct (or otherwise compatible); checkSchemaParity will validate.
+           currentDF
+       }
+     } else {
+       currentDF
+     }
+   }
+  }
+
+  private def dfToIndexJson(schema: StructType,
+                            indexName: String,
+                            keyCol: String,
+                            searchActionCol: String,
+                            vectorCols: Option[Seq[VectorColParams]]): String = {
+
+    val vectorConfig = Some(VectorSearch(Seq(AlgorithmConfigs(AzureSearchAPIConstants.VectorConfigName,
+      AzureSearchAPIConstants.VectorSearchAlgorithm))))
+    val is = IndexInfo(
+      Some(indexName),
+      structFieldToSearchFields(schema, keyCol, searchActionCol, vectorCols).get,
+      None, None, None, None, None, None, None, None,
+      if (vectorCols.isEmpty) None else vectorConfig
+    )
+    is.toJson.compactPrint
+  }
+
+  private[search] def configureAuthentication(documents: AddDocuments,
+                                              auth: AzureSearchAuth): AddDocuments = {
+    val validatedAuth = auth.validated
+    validatedAuth.subscriptionKey.foreach(value => documents.setSubscriptionKey(value))
+    validatedAuth.aadToken.foreach(value => documents.setAADToken(value))
+    validatedAuth.customAuthHeader.foreach(value => documents.setCustomAuthHeader(value))
+    if (validatedAuth.customHeaders.nonEmpty) {
+      documents.setCustomHeaders(validatedAuth.customHeaders)
+    }
+    documents
+  }
+
+  private def resolveIndexDefinition(existingIndexJsonOpt: Option[String],
+                                     indexJsonOpt: Option[String],
+                                     vectorColsInfo: Option[String],
+                                     df: DataFrame,
+                                     indexName: String,
+                                     keyCol: Option[String],
+                                     actionCol: String): (String, DataFrame) = {
+    existingIndexJsonOpt match {
+      case Some(existingIndexJson) =>
+        val vectorColNameTypeTuple = getVectorColConf(existingIndexJson)
+        (existingIndexJson, makeColsCompatible(vectorColNameTypeTuple, df))
+      case None =>
+        indexJsonOpt match {
+          case Some(indexJson) =>
+            val vectorColNameTypeTuple = getVectorColConf(indexJson)
+            (indexJson, makeColsCompatible(vectorColNameTypeTuple, df))
+          case None =>
+            val vectorCols = vectorColsInfo.map(parseVectorColsJson)
+            val vectorColNameTypeTuple = vectorCols
+              .map(_.map(vc => (vc.name, "Collection(Edm.Single)"))).getOrElse(Seq.empty)
+            val newDF = makeColsCompatible(vectorColNameTypeTuple, df)
+            val inferredIndexJson = dfToIndexJson(
+              newDF.schema, indexName, keyCol.getOrElse(""), actionCol, vectorCols)
+            (inferredIndexJson, newDF)
+        }
+    }
+  }
+
+  private def prepareDF(df: DataFrame,  //scalastyle:ignore method.length
+                        options: Map[String, String] = Map()): DataFrame = {
+    val applicableOptions = Set(
+      "subscriptionKey", "AADToken", "aadToken", "CustomAuthHeader", "customAuthHeader", "customHeaders",
+      "actionCol", "serviceName", "indexName", "indexJson", "apiVersion", "batchSize", "fatalErrors",
+      "filterNulls", "keyCol", "vectorCols"
+    )
+
+    options.keys.foreach(k =>
+      assert(applicableOptions(k), s"$k not an applicable option ${applicableOptions.toList}"))
+
+    val auth = AzureSearchAuth.fromOptions(options)
+    val actionCol = options.getOrElse("actionCol", "@search.action")
+    val serviceName = options("serviceName")
+    val indexJsonOpt = options.get("indexJson")
+    val apiVersion = options.getOrElse("apiVersion", AzureSearchAPIConstants.DefaultAPIVersion)
+    val batchSize = options.getOrElse("batchSize", "100").toInt
+    val fatalErrors = options.getOrElse("fatalErrors", "true").toBoolean
+    val filterNulls = options.getOrElse("filterNulls", "false").toBoolean
+    val vectorColsInfo = options.get("vectorCols")
+
+    val keyCol = options.get("keyCol")
+    val indexName = options.getOrElse("indexName", parseIndexJson(indexJsonOpt.get).name.get)
+    if (indexJsonOpt.isDefined) {
+      List("keyCol", "indexName", "vectorCols").foreach(opt =>
+        assert(!options.contains(opt), s"Cannot set both indexJson options and $opt")
+      )
+    }
+
+    df.schema.fields.foreach { sf: StructField =>
+      sf.dataType match {
+        case ArrayType(ArrayType(_, _), _) => throw new IllegalArgumentException(
+          s"Cannot make an index with a doubly nested array, " +
+            s"please wrap column ${sf.name} with a struct to avoid this error")
+        case _ =>
+      }
+    }
+
+    val existingIndexJsonOpt = if (getExisting(auth, serviceName, apiVersion).contains(indexName)) {
+      if (indexJsonOpt.isDefined) {
+        println(f"indexJsonOpt is specified, however an index for $indexName already exists," +
+          f"we will use the index definition obtained from the existing index instead")
+      }
+      val existingIndexJson = IndexJsonReader.get(auth, serviceName, indexName, apiVersion)
+      VectorSchema.requireCompatibleExistingIndex(existingIndexJson.parseJson, apiVersion)
+      Some(existingIndexJson)
+    } else {
+      None
+    }
+
+    val (indexJson, preppedDF) = resolveIndexDefinition(
+      existingIndexJsonOpt, indexJsonOpt, vectorColsInfo, df, indexName, keyCol, actionCol)
+
+    // TODO: Support vector search in nested fields
+    // Throws an exception if any nested field is a vector in the schema
+    parseIndexJson(indexJson).fields.foreach(_.fields.foreach(assertNoNestedVectors))
+
+    if (existingIndexJsonOpt.isEmpty) {
+      SearchIndex.createIfNoneExists(auth, serviceName, indexJson, apiVersion)
+    }
+    val dateConvertedDF = convertDateTimeToISO8601(preppedDF, indexJson)
+    val geoConvertedDF = convertGeographyPointToStruct(dateConvertedDF, indexJson)
+
+    logInfo("checking schema parity")
+    checkSchemaParity(geoConvertedDF.schema, indexJson, actionCol)
+
+    val df1 = if (filterNulls) {
+      val collectionColumns = parseIndexJson(indexJson).fields
+        .filter(_.`type`.startsWith("Collection"))
+        .map(_.name)
+      collectionColumns.foldLeft(geoConvertedDF) { (ndf, c) => filterOutNulls(ndf, c) }
+    } else {
+      geoConvertedDF
+    }
+
+    // Convert date/timestamp columns to ISO8601 strings for Azure AI Search
+
+    val addDocuments = configureAuthentication(
+      new AddDocuments()
+        .setServiceName(serviceName)
+        .setIndexName(indexName)
+        .setActionCol(actionCol)
+        .setBatchSize(batchSize)
+        .setOutputCol("out")
+        .setErrorCol("error")
+        // Pin the document endpoint to the same api-version used to create/read the index, otherwise
+        // an explicit apiVersion option would only apply to the index APIs.
+        .setUrl(s"https://$serviceName.search.windows.net" +
+          s"/indexes/$indexName/docs/index?api-version=$apiVersion"),
+      auth)
+
+    addDocuments.transform(df1)
+      .withColumn("error",
+        UDFUtils.oldUdf(checkForErrors(fatalErrors) _, ErrorUtils.ErrorSchema)(col("error"), col("input")))
+  }
+
+  private def assertNoNestedVectors(fields: Seq[IndexField]): Unit = {
+    def checkVectorField(field: IndexField): Unit = {
+      if (field.isVectorField) {
+        throw new IllegalArgumentException(s"Nested field ${field.name} is a vector field, vector fields in nested" +
+          s" fields are not supported.")
+      }
+      field.fields.foreach(_.foreach(checkVectorField))
+    }
+    fields.foreach(checkVectorField)
+  }
+
+  private def getVectorColConf(indexJson: String): Seq[(String, String)] = {
+    parseIndexJson(indexJson).fields
+      .filter(_.isVectorField)
+      .map(f => (f.name, f.`type`))
+  }
+  private def makeColsCompatible(vectorColNameTypeTuple: Seq[(String, String)],
+                                               df: DataFrame): DataFrame = {
+    vectorColNameTypeTuple.foldLeft(df) { case (accDF, (colName, colType)) =>
+      if (!accDF.columns.contains(colName)) {
+        println(s"Column $colName is specified in either indexJson or vectorCols but not found in dataframe " +
+          s"columns ${accDF.columns.toList}")
+        accDF
+      }
+      else {
+        val colDataType = accDF.schema(colName).dataType
+        assert(colDataType match {
+          case ArrayType(elementType, _) => elementType == FloatType || elementType == DoubleType
+          case VectorType => true
+          case _ => false
+        }, s"Vector column $colName needs to be one of (ArrayType(FloatType), ArrayType(DoubleType), VectorType)")
+        if (colDataType.isInstanceOf[ArrayType]) {
+          accDF.withColumn(colName, accDF(colName).cast(edmTypeToSparkType(colType, None)))
+        } else {
+          // first cast vectorUDT to array<double>, then cast it to correct array type
+          val modifiedDF = accDF.withColumn(colName, vector_to_array(accDF(colName)))
+          modifiedDF.withColumn(colName, modifiedDF(colName).cast(edmTypeToSparkType(colType, None)))
+        }
+      }
+    }
+  }
+
+  private def isEdmCollection(t: String): Boolean = {
+    t.startsWith("Collection(") && t.endsWith(")")
+  }
+
+  private def getEdmCollectionElement(t: String): String = {
+    t.substring("Collection(".length).dropRight(1)
+  }
+
+  private[ml] val GeographyPointEdmType = "Edm.GeographyPoint"
+
+  // GeoJSON Points are always [longitude, latitude]
+  private[ml] val GeographyPointCoordinateCount = 2
+
+  private[ml] def edmTypeToSparkType(dt: String,  //scalastyle:ignore cyclomatic.complexity
+                                     fields: Option[Seq[IndexField]]): DataType = dt match {
+    case t if isEdmCollection(t) =>
+      ArrayType(edmTypeToSparkType(getEdmCollectionElement(t), fields), containsNull = false)
+    case "Edm.String" => StringType
+    case "Edm.Boolean" => BooleanType
+    case "Edm.Int64" => LongType
+    case "Edm.Int32" => IntegerType
+    case "Edm.Double" => DoubleType
+    case "Edm.Single" => FloatType
+    case "Edm.DateTimeOffset" => StringType // We convert date/time to ISO8601 strings
+    case GeographyPointEdmType =>
+      StructType(Seq(
+        StructField("type", StringType),
+        StructField("coordinates", ArrayType(DoubleType))
+      ))
+    case "Edm.ComplexType" => StructType(fields.get.map(f =>
+      StructField(f.name, edmTypeToSparkType(f.`type`, f.fields))))
+  }
+
+  private def sparkTypeToEdmType(dt: DataType,  //scalastyle:ignore cyclomatic.complexity
+                                 allowCollections: Boolean = true): (String, Option[Seq[IndexField]]) = {
+    dt match {
+      case ArrayType(it, _) if allowCollections =>
+        val (innerType, innerFields) = sparkTypeToEdmType(it, allowCollections = false)
+        (s"Collection($innerType)", innerFields)
+      case ArrayType(it, _) if !allowCollections =>
+        val (innerType, innerFields) = sparkTypeToEdmType(it, allowCollections)
+        ("Edm.ComplexType", innerFields)
+      case StringType => ("Edm.String", None)
+      case BooleanType => ("Edm.Boolean", None)
+      case IntegerType => ("Edm.Int32", None)
+      case LongType => ("Edm.Int64", None)
+      case DoubleType => ("Edm.Double", None)
+      case FloatType  => ("Edm.Single", None)
+      case DateType => ("Edm.DateTimeOffset", None)
+      case TimestampType => ("Edm.DateTimeOffset", None)
+      case StructType(fields) => ("Edm.ComplexType", Some(fields.map { f =>
+        val (innerType, innerFields) = sparkTypeToEdmType(f.dataType)
+        IndexField(f.name, innerType, None, None, None, None, None, None, None, None, None, None, innerFields,
+          None, None) // TODO: Support vector search in nested fields
+      }))
+    }
+  }
+
+  private def dtEqualityModuloNullability(dt1: DataType, dt2: DataType): Boolean = (dt1, dt2) match {
+    case (ArrayType(it1, _), ArrayType(it2, _)) => dtEqualityModuloNullability(it1, it2)
+    case (StructType(fields1), StructType(fields2)) =>
+      fields1.zip(fields2).forall {
+        case (sf1, sf2) => sf1.name == sf2.name && dtEqualityModuloNullability(sf1.dataType, sf2.dataType)
+      }
+    case _ => dt1 == dt2
+  }
+
+  private def checkSchemaParity(schema: StructType, indexJson: String, searchActionCol: String): Unit = {
+    val indexInfo = parseIndexJson(indexJson)
+    val indexFields = indexInfo.fields.map(f => (f.name, edmTypeToSparkType(f.`type`, f.fields))).toMap
+
+    assert(schema(searchActionCol).dataType == StringType)
+    schema.toList.filter(_.name != searchActionCol).foreach { field =>
+
+      val indexType = indexFields.getOrElse(field.name, throw new IllegalArgumentException(
+        s"${field.name} not found in search index fields: ${indexFields.keys.toList}"))
+
+      assert(dtEqualityModuloNullability(indexType, field.dataType), s"field ${field.name} requires type" +
+        s" $indexType your dataframe column is of type ${field.dataType}")
+    }
+  }
+
+  def stream(df: DataFrame, options: Map[String, String] = Map()): DataStreamWriter[Row] = {
+    prepareDF(df, options).writeStream.foreach(new StreamMaterializer)
+  }
+
+  def write(df: DataFrame, options: Map[String, String] = Map()): Unit = {
+    prepareDF(df, options).foreach(_ => ())
+  }
+
+  def stream(df: DataFrame, options: java.util.HashMap[String, String]): DataStreamWriter[Row] = {
+    stream(df, options.asScala.toMap)
+  }
+
+  def write(df: DataFrame, options: java.util.HashMap[String, String]): Unit = {
+    write(df, options.asScala.toMap)
+  }
+
+}

@@ -4,6 +4,7 @@
 package com.microsoft.azure.synapse.ml.param
 
 import com.microsoft.azure.synapse.ml.core.serialize.ComplexParam
+import com.microsoft.azure.synapse.ml.core.utils.DeserializationClassFilter
 import org.apache.spark.ml.param.Params
 
 /** Param for ByteArray.  Needed as spark has explicit params for many different
@@ -15,8 +16,7 @@ class ByteArrayParam(parent: Params, name: String, doc: String, isValid: Array[B
   def this(parent: Params, name: String, doc: String) =
     this(parent, name, doc, (_: Array[Byte]) => true)
 
-  override private[ml] def dotnetTestValue(v: Array[Byte]): String =
-    s"""new byte[]
-       |    ${DotnetWrappableParam.dotnetDefaultRender(v, this)}""".stripMargin
+  override protected def deserializationClassFilter: Option[DeserializationClassFilter] =
+    Some(DeserializationClassFilter())
 
 }

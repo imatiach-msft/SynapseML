@@ -6,7 +6,7 @@ package com.microsoft.azure.synapse.ml.automl
 import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts.HasEvaluationMetric
 import com.microsoft.azure.synapse.ml.core.metrics.MetricConstants
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import com.microsoft.azure.synapse.ml.param.{DataFrameParam, TransformerArrayParam, TransformerParam}
 import com.microsoft.azure.synapse.ml.train.ComputeModelStatistics
 import org.apache.spark.ml._
@@ -29,8 +29,9 @@ trait FindBestModelParams extends Wrappable with ComplexParamsWritable with HasE
     * The metrics that can be chosen are:
     *
     * For Binary Classifiers:
-    *     - AreaUnderROC
+    *     - areaUnderROC (reported in the AUC column)
     *     - AUC
+    *     - areaUnderPR
     *     - accuracy
     *     - precision
     *     - recall
@@ -52,7 +53,7 @@ trait FindBestModelParams extends Wrappable with ComplexParamsWritable with HasE
 /** Evaluates and chooses the best model from a list of models. */
 class FindBestModel(override val uid: String) extends Estimator[BestModel]
   with FindBestModelParams with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.AutoML)
 
   def this() = this(Identifiable.randomUID("FindBestModel"))
 
@@ -99,7 +100,7 @@ class FindBestModel(override val uid: String) extends Estimator[BestModel]
 
       val bestIndex = simpleMetrics.zipWithIndex.foldLeft(Double.NaN, -1) {
         case (best, curr) =>
-          if (best._1.isNaN || operator.gt(best._1, curr._1))
+          if (best._1.isNaN || operator.lt(best._1, curr._1))
             curr
           else
             best
@@ -139,7 +140,7 @@ trait HasBestModel extends Params {
 /** Model produced by [[FindBestModel]]. */
 class BestModel(val uid: String) extends Model[BestModel]
   with ComplexParamsWritable with Wrappable with HasBestModel with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.AutoML)
 
   def this() = this(Identifiable.randomUID("BestModel"))
 

@@ -31,12 +31,30 @@ object LightGBMConstants {
   /** Multiclass classification objective
     */
   val MulticlassObjective: String = "multiclass"
-  /** Streaming execution mode.
+  /** Streaming data transfer mode.
     */
-  val StreamingExecutionMode: String = "streaming"
-  /** Bulk execution mode.
+  val StreamingDataTransferMode: String = "streaming"
+  /** Bulk data transfer mode.
     */
-  val BulkExecutionMode: String = "bulk"
+  val BulkDataTransferMode: String = "bulk"
+  /** Sampling mode - random n within all global data.
+    */
+  val SubsetSamplingModeGlobal: String = "global"
+  /** Sampling mode - random n within subset N.
+    */
+  val SubsetSamplingModeSubset: String = "subset"
+  /** Sampling mode take first n rows.
+    */
+  val SubsetSamplingModeFixed: String = "fixed"
+  /** Tree learning on the CPU. This is LightGBM's own default.
+    */
+  val CPUDeviceType: String = "cpu"
+  /** Tree learning on an OpenCL GPU.
+    */
+  val GPUDeviceType: String = "gpu"
+  /** Tree learning on a CUDA GPU.
+    */
+  val CUDADeviceType: String = "cuda"
   /** Enabled task, used to indicate task that creates lightgbm dataset and runs training.
     */
   val EnabledTask: String = "enabledTask"

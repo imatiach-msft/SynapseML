@@ -106,7 +106,6 @@ class _UserResourceFeatureVectorMapping:
         user_feature_vector_mapping_df: DataFrame,
         res_feature_vector_mapping_df: DataFrame,
     ):
-
         self.tenant_col = tenant_col
         self.user_col = user_col
         self.user_vec_col = user_vec_col
@@ -127,7 +126,6 @@ class _UserResourceFeatureVectorMapping:
         user_feature_vector_mapping_df: Optional[DataFrame] = None,
         res_feature_vector_mapping_df: Optional[DataFrame] = None,
     ):
-
         """
         create a new model replacing the user and resource models with new ones (optional)
 
@@ -765,7 +763,6 @@ class AccessAnomaly(Estimator):
         negScore: Optional[float] = None,
         historyAccessDf: Optional[DataFrame] = None,
     ):
-
         super().__init__()
 
         if applyImplicitCf:
@@ -928,6 +925,9 @@ class AccessAnomaly(Estimator):
         max_iter = self.max_iter
         distinct_tenants = df.select(tenant_col).distinct().cache()
         num_tenants = distinct_tenants.count()
+        if num_tenants == 0:
+            raise ValueError("AccessAnomaly requires non-empty training data.")
+
         separate_tenants = self.separate_tenants
         num_blocks = (
             self.num_blocks

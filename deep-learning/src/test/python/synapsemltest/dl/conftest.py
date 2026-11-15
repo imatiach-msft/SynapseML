@@ -8,7 +8,6 @@ import urllib
 from os.path import join
 
 import numpy as np
-import pandas as pd
 import pytest
 import torchvision.transforms as transforms
 from pyspark.ml.feature import StringIndexer
@@ -30,7 +29,6 @@ class CallbackBackend(object):
 
 
 def _download_dataset():
-
     urllib.request.urlretrieve(
         "https://mmlspark.blob.core.windows.net/publicwasb/17flowers.tgz",
         dataset_dir + "17flowers.tgz",

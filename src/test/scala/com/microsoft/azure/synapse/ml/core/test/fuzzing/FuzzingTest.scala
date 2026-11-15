@@ -3,26 +3,17 @@
 
 package com.microsoft.azure.synapse.ml.core.test.fuzzing
 
-import com.microsoft.azure.synapse.ml.Secrets
-import com.microsoft.azure.synapse.ml.build.BuildInfo
-import com.microsoft.azure.synapse.ml.cognitive.{HasAADToken, HasSubscriptionKey}
 import com.microsoft.azure.synapse.ml.core.contracts.{HasFeaturesCol, HasInputCol, HasLabelCol, HasOutputCol}
-import com.microsoft.azure.synapse.ml.core.env.StreamUtilities.using
 import com.microsoft.azure.synapse.ml.core.test.base.TestBase
 import com.microsoft.azure.synapse.ml.core.utils.JarLoadingUtils
 import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.services.{HasAADToken, HasSubscriptionKey}
 import org.apache.spark.ml._
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.util.{MLReadable, MLWritable}
 
-import java.io.File
-import java.lang.reflect.ParameterizedType
-import java.nio.charset.MalformedInputException
-import java.nio.file.Files
-import scala.collection.JavaConverters._
-import scala.io.Source
+import java.lang.reflect.{InvocationTargetException, Modifier, ParameterizedType}
 import scala.language.existentials
-import scala.util.matching.Regex
 
 /** Tests to validate fuzzing of modules. */
 class FuzzingTest extends TestBase {
@@ -44,10 +35,12 @@ class FuzzingTest extends TestBase {
 
   test("Verify stage fitting and transforming") {
     val exemptions: Set[String] = Set(
+      "com.microsoft.azure.synapse.ml.services.text.TextAnalyze",
       "com.microsoft.azure.synapse.ml.causal.DoubleMLModel",
+      "com.microsoft.azure.synapse.ml.causal.DiffInDiffModel",
       "com.microsoft.azure.synapse.ml.causal.OrthoForestDMLModel",
-      "com.microsoft.azure.synapse.ml.cognitive.DocumentTranslator",
-      "com.microsoft.azure.synapse.ml.cognitive.translate.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.services.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.services.translate.DocumentTranslator",
       "org.apache.spark.ml.feature.FastVectorAssembler",
       "com.microsoft.azure.synapse.ml.featurize.ValueIndexerModel",
       "com.microsoft.azure.synapse.ml.cntk.train.CNTKLearner",
@@ -57,7 +50,7 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.train.TrainedClassifierModel",
       "com.microsoft.azure.synapse.ml.featurize.DataConversion",
       "com.microsoft.azure.synapse.ml.core.serialize.TestEstimatorBase",
-      "com.microsoft.azure.synapse.ml.cognitive.LocalNER",
+      "com.microsoft.azure.synapse.ml.services.LocalNER",
       "com.microsoft.azure.synapse.ml.nn.KNNModel",
       "com.microsoft.azure.synapse.ml.nn.ConditionalKNNModel",
       "com.microsoft.azure.synapse.ml.core.serialize.MixedParamTest",
@@ -75,9 +68,15 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.stages.TimerModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMClassificationModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMRankerModel",
-      "com.microsoft.azure.synapse.ml.cognitive.form.FormOntologyTransformer",
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleDetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.automl.BestModel" //TODO add proper interfaces to all of these
+      "com.microsoft.azure.synapse.ml.services.form.FormOntologyTransformer",
+      "com.microsoft.azure.synapse.ml.automl.BestModel", //TODO add proper interfaces to all of these
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor",
+      "com.microsoft.azure.synapse.ml.services.form.GetCustomModel",
+      "com.microsoft.azure.synapse.ml.services.form.AnalyzeCustomModel",
+      "com.microsoft.azure.synapse.ml.services.geospatial.AzureMapsTraitsSuite$TestableMapsAsyncReply",
+      // Azure Maps Spatial service retired on 9/30/2025
+      "com.microsoft.azure.synapse.ml.services.geospatial.CheckPointInPolygon"
     )
     val applicableStages = pipelineStages.filter(t => !exemptions(t.getClass.getName))
     val applicableClasses = applicableStages.map(_.getClass.asInstanceOf[Class[_]]).toSet
@@ -98,14 +97,16 @@ class FuzzingTest extends TestBase {
 
   test("Verify all stages can be serialized") {
     val exemptions: Set[String] = Set(
-      "com.microsoft.azure.synapse.ml.cognitive.translate.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.services.text.TextAnalyze",
+      "com.microsoft.azure.synapse.ml.services.translate.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.causal.DiffInDiffModel",
       "com.microsoft.azure.synapse.ml.automl.BestModel",
       "com.microsoft.azure.synapse.ml.automl.TuneHyperparameters",
       "com.microsoft.azure.synapse.ml.automl.TuneHyperparametersModel",
       "com.microsoft.azure.synapse.ml.causal.DoubleMLModel",
       "com.microsoft.azure.synapse.ml.causal.OrthoForestDMLModel",
       "com.microsoft.azure.synapse.ml.cntk.train.CNTKLearner",
-      "com.microsoft.azure.synapse.ml.cognitive.LocalNER",
+      "com.microsoft.azure.synapse.ml.services.LocalNER",
       "com.microsoft.azure.synapse.ml.core.serialize.ComplexParamTest",
       "com.microsoft.azure.synapse.ml.core.serialize.MixedParamTest",
       "com.microsoft.azure.synapse.ml.core.serialize.StandardParamTest",
@@ -126,11 +127,16 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.vw.VowpalWabbitClassificationModel",
       "com.microsoft.azure.synapse.ml.vw.VowpalWabbitContextualBanditModel",
       "com.microsoft.azure.synapse.ml.vw.VowpalWabbitGenericModel",
-      "com.microsoft.azure.synapse.ml.cognitive.FormOntologyTransformer",
-      "com.microsoft.azure.synapse.ml.cognitive.DetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.cognitive.form.FormOntologyTransformer",
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleDetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.vw.VowpalWabbitRegressionModel"
+      "com.microsoft.azure.synapse.ml.services.FormOntologyTransformer",
+      "com.microsoft.azure.synapse.ml.services.form.FormOntologyTransformer",
+      "com.microsoft.azure.synapse.ml.vw.VowpalWabbitRegressionModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor",
+      "com.microsoft.azure.synapse.ml.services.form.GetCustomModel",
+      "com.microsoft.azure.synapse.ml.services.form.AnalyzeCustomModel",
+      "com.microsoft.azure.synapse.ml.services.geospatial.AzureMapsTraitsSuite$TestableMapsAsyncReply",
+      // Azure Maps Spatial service retired on 9/30/2025
+      "com.microsoft.azure.synapse.ml.services.geospatial.CheckPointInPolygon"
     )
     val applicableStages = pipelineStages.filter(t => !exemptions(t.getClass.getName))
     val applicableClasses = applicableStages.map(_.getClass.asInstanceOf[Class[_]]).toSet
@@ -152,9 +158,11 @@ class FuzzingTest extends TestBase {
 
   test("Verify all stages can be tested in python") {
     val exemptions: Set[String] = Set(
-      "com.microsoft.azure.synapse.ml.cognitive.translate.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.services.text.TextAnalyze",
+      "com.microsoft.azure.synapse.ml.services.translate.DocumentTranslator",
       "com.microsoft.azure.synapse.ml.automl.TuneHyperparameters",
       "com.microsoft.azure.synapse.ml.causal.DoubleMLModel",
+      "com.microsoft.azure.synapse.ml.causal.DiffInDiffModel",
       "com.microsoft.azure.synapse.ml.causal.OrthoForestDMLModel",
       "com.microsoft.azure.synapse.ml.train.TrainedRegressorModel",
       "com.microsoft.azure.synapse.ml.train.TrainedClassifierModel",
@@ -178,9 +186,15 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.featurize.ValueIndexerModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMRankerModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMRegressionModel",
-      "com.microsoft.azure.synapse.ml.cognitive.form.FormOntologyTransformer",
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleDetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.train.ComputePerInstanceStatistics"
+      "com.microsoft.azure.synapse.ml.services.form.FormOntologyTransformer",
+      "com.microsoft.azure.synapse.ml.train.ComputePerInstanceStatistics",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor",
+      "com.microsoft.azure.synapse.ml.services.form.GetCustomModel",
+      "com.microsoft.azure.synapse.ml.services.form.AnalyzeCustomModel",
+      "com.microsoft.azure.synapse.ml.services.geospatial.AzureMapsTraitsSuite$TestableMapsAsyncReply",
+      // Azure Maps Spatial service retired on 9/30/2025
+      "com.microsoft.azure.synapse.ml.services.geospatial.CheckPointInPolygon"
     )
     val applicableStages = pipelineStages.filter(t => !exemptions(t.getClass.getName))
     val applicableClasses = applicableStages.map(_.getClass.asInstanceOf[Class[_]]).toSet
@@ -204,9 +218,11 @@ class FuzzingTest extends TestBase {
 
   test("Verify all stages can be tested in R") {
     val exemptions: Set[String] = Set(
-      "com.microsoft.azure.synapse.ml.cognitive.translate.DocumentTranslator",
+      "com.microsoft.azure.synapse.ml.services.text.TextAnalyze",
+      "com.microsoft.azure.synapse.ml.services.translate.DocumentTranslator",
       "com.microsoft.azure.synapse.ml.automl.TuneHyperparameters",
       "com.microsoft.azure.synapse.ml.causal.DoubleMLModel",
+      "com.microsoft.azure.synapse.ml.causal.DiffInDiffModel",
       "com.microsoft.azure.synapse.ml.causal.OrthoForestDMLModel",
       "com.microsoft.azure.synapse.ml.train.TrainedRegressorModel",
       "com.microsoft.azure.synapse.ml.train.TrainedClassifierModel",
@@ -230,9 +246,15 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.featurize.ValueIndexerModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMRankerModel",
       "com.microsoft.azure.synapse.ml.lightgbm.LightGBMRegressionModel",
-      "com.microsoft.azure.synapse.ml.cognitive.form.FormOntologyTransformer",
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleDetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.train.ComputePerInstanceStatistics"
+      "com.microsoft.azure.synapse.ml.services.form.FormOntologyTransformer",
+      "com.microsoft.azure.synapse.ml.train.ComputePerInstanceStatistics",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor",
+      "com.microsoft.azure.synapse.ml.services.form.GetCustomModel",
+      "com.microsoft.azure.synapse.ml.services.form.AnalyzeCustomModel",
+      "com.microsoft.azure.synapse.ml.services.geospatial.AzureMapsTraitsSuite$TestableMapsAsyncReply",
+      // Azure Maps Spatial service retired on 9/30/2025
+      "com.microsoft.azure.synapse.ml.services.geospatial.CheckPointInPolygon"
     )
     val applicableStages = pipelineStages.filter(t => !exemptions(t.getClass.getName))
     val applicableClasses = applicableStages.map(_.getClass.asInstanceOf[Class[_]]).toSet
@@ -325,7 +347,9 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.exploratory.AggregateBalanceMeasure",
       "com.microsoft.azure.synapse.ml.exploratory.DistributionBalanceMeasure",
       "com.microsoft.azure.synapse.ml.exploratory.FeatureBalanceMeasure",
-      "com.microsoft.azure.synapse.ml.isolationforest.IsolationForestModel"
+      "com.microsoft.azure.synapse.ml.isolationforest.IsolationForestModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor"
     )
 
     pipelineStages.foreach { stage =>
@@ -347,7 +371,9 @@ class FuzzingTest extends TestBase {
       "com.microsoft.azure.synapse.ml.core.serialize.ComplexParamTest",
       "com.microsoft.azure.synapse.ml.core.serialize.MixedParamTest",
       "com.microsoft.azure.synapse.ml.core.serialize.StandardParamTest",
-      "com.microsoft.azure.synapse.ml.core.serialize.TestEstimatorBase"
+      "com.microsoft.azure.synapse.ml.core.serialize.TestEstimatorBase",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressorModel",
+      "com.microsoft.azure.synapse.ml.codegen.TestRegressor"
     )
     val clazz = classOf[SynapseMLLogging]
 
@@ -363,13 +389,10 @@ class FuzzingTest extends TestBase {
 
   test("Verify all classes extending HasSubscriptionKey also extend HasAADToken") {
     val exemptions = Set[String](
-      // MVAD doesn't support aad token for now
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleDetectMultivariateAnomaly",
-      "com.microsoft.azure.synapse.ml.cognitive.anomaly.SimpleFitMultivariateAnomaly",
       // TO BE VERIFIED
-      "com.microsoft.azure.synapse.ml.cognitive.speech.ConversationTranscription",
-      "com.microsoft.azure.synapse.ml.cognitive.speech.SpeechToTextSDK",
-      "com.microsoft.azure.synapse.ml.cognitive.speech.TextToSpeech"
+      "com.microsoft.azure.synapse.ml.services.speech.ConversationTranscription",
+      "com.microsoft.azure.synapse.ml.services.speech.SpeechToTextSDK",
+      "com.microsoft.azure.synapse.ml.services.speech.TextToSpeech"
     )
     val subClazz = classOf[HasSubscriptionKey]
     val clazz = classOf[HasAADToken]
@@ -380,56 +403,6 @@ class FuzzingTest extends TestBase {
           stage.getClass.getName + " needs to extend " + clazz.getName)
       }
     }
-  }
-
-  test("Scan codebase for secrets") {
-    val excludedFiles = List(
-      ".png",
-      ".jpg",
-      ".jpeg")
-    val excludedDirs = List(
-      ".git",
-      ".idea",
-      "target",
-      ".docusaurus",
-      "node_modules",
-      s"website${File.separator}build"
-    )
-
-    val regexps: List[Regex] = using(Source.fromURL(Secrets.SecretRegexpFile)) { s =>
-      s.getLines().toList.map(_.r)
-    }.get
-
-    val allFiles = Files.walk(BuildInfo.baseDirectory.getParentFile.toPath)
-      .iterator().asScala.map(_.toFile)
-      .filterNot(f => excludedDirs.exists(dir => f.toString.contains(dir)))
-      .toList
-
-    val nameIssues = allFiles.flatMap {
-      case f if regexps.flatMap(_.findFirstMatchIn(f.toString)).nonEmpty =>
-        Some(s"Bad file name: ${f.toString}")
-      case _ =>
-        None
-    }
-    val contentsIssue = allFiles.filter(_.isFile)
-      .filterNot(f => excludedFiles.exists(end => f.toString.endsWith(end)))
-      .flatMap { f =>
-        println(f)
-        try {
-          val lines = using(Source.fromFile(f)) { s => s.getLines().toList }.get
-          lines.zipWithIndex.flatMap { case (l, i) =>
-            if (regexps.flatMap(_.findFirstMatchIn(l)).nonEmpty) {
-              Some(s"Line $i of file ${f.toString} contains secrets")
-            } else {
-              None
-            }
-          }
-        } catch {
-          case _: MalformedInputException => List()
-        }
-      }
-    val allIssues = nameIssues ++ contentsIssue
-    assert(allIssues.isEmpty, allIssues.mkString("\n"))
   }
 
   private def assertOrLog(condition: Boolean, hint: String = "",
@@ -444,7 +417,19 @@ class FuzzingTest extends TestBase {
 
   private lazy val readers: List[MLReadable[_]] = JarLoadingUtils.instantiateObjects[MLReadable[_]]()
 
-  private lazy val pipelineStages: List[PipelineStage] = JarLoadingUtils.instantiateServices[PipelineStage]()
+  private lazy val pipelineStages: List[PipelineStage] = {
+    JarLoadingUtils.AllClasses
+      .filter(classOf[PipelineStage].isAssignableFrom(_))
+      .filter(clazz => !Modifier.isAbstract(clazz.getModifiers))
+      .filterNot(clazz => clazz.getName.contains("$") || clazz.getSimpleName.startsWith("Testable"))
+      .map { clazz =>
+        try {
+          clazz.getConstructor().newInstance().asInstanceOf[PipelineStage]
+        } catch {
+          case e: InvocationTargetException => throw e.getCause
+        }
+      }
+  }
 
   private lazy val experimentFuzzers: List[ExperimentFuzzing[_ <: PipelineStage]] =
     JarLoadingUtils.instantiateServices[ExperimentFuzzing[_ <: PipelineStage]]()

@@ -1,18 +1,43 @@
 steps:
   - bash: echo "##vso[task.prependpath]$CONDA/bin"
     displayName: Add conda to PATH
-#  - bash: sudo chown -R $(whoami):$(id -ng) $(CONDA_CACHE_DIR)
-#    displayName: Fix directory permissions
-#  - task: Cache@2
-#    displayName: Use cached Anaconda environment
-#    inputs:
-#      key: 'conda | "$(Agent.OS)" | environment.yml'
-#      restoreKeys: |
-#        python | "$(Agent.OS)"
-#        python
-#      path: $(CONDA_CACHE_DIR)
-#      cacheHitVar: CONDA_CACHE_RESTORED
+    retryCountOnTaskFailure: 1
+  - bash: sudo chown -R $(whoami):$(id -ng) $(CONDA_CACHE_DIR)
+    displayName: Fix directory permissions
+  - task: Cache@2
+    displayName: Use cached Anaconda environment
+    inputs:
+      key: 'conda | "$(Agent.OS)" | environment.yml'
+      restoreKeys: |
+        python | "$(Agent.OS)"
+        python
+      path: $(CONDA_CACHE_DIR)
+      cacheHitVar: CONDA_CACHE_RESTORED
+    timeoutInMinutes: 20
+    retryCountOnTaskFailure: 1
+    continueOnError: true
   - bash: |
-      conda env create -f environment.yml  -v -v -v
+      echo "=== Disk space BEFORE cleanup ==="
+      df -h / | grep -E 'Filesystem|/$'
+      echo ""
+      echo "Removing unused pre-installed SDKs..."
+      sudo rm -rf /usr/local/lib/android || true
+      sudo rm -rf /usr/lib/google-cloud-sdk || true
+      echo ""
+      echo "=== Disk space AFTER cleanup ==="
+      df -h / | grep -E 'Filesystem|/$'
+    displayName: 'Free disk space (remove unused SDKs)'
+  - bash: |
+      set -e
+      df -H
+      conda env remove --name synapseml --yes || true
+      (timeout 30m conda env create --yes -f environment.yml -v)  || (timeout 30m conda env create --yes -f environment.yml -v)
+      conda clean --all -y
+      pip cache purge
     displayName: Create Anaconda environment
-#    condition: eq(variables.CONDA_CACHE_RESTORED, 'false')
+    retryCountOnTaskFailure: 1
+    condition: ne(variables.CONDA_CACHE_RESTORED, 'true')
+  - bash: |
+      df -H
+    displayName: Check space
+    condition: always()

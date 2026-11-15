@@ -23,7 +23,7 @@ import com.microsoft.ml.lightgbm._
   * .
   * Note: sample data row count is not expected to exceed max(Int), so we index with Ints.
   */
-class SampledData(val numRows: Int, val numCols: Int) {
+case class SampledData(numRows: Int, numCols: Int) {
 
   // Allocate full arrays for each feature column, but we will push only non-zero values and
   // keep track of actual counts in rowCounts array
@@ -54,20 +54,18 @@ class SampledData(val numRows: Int, val numCols: Int) {
 
   // Store non-zero elements in arrays given a dense feature value array
   def pushRow(rowData: Array[Double], index: Int): Unit = {
-    require(rowData.length <= numCols, s"Row is too large for sample data.  size should be $numCols" +
-                                     s", but is ${rowData.length}")
+    DatasetUtils.validateFeatureSize(rowData.length, numCols)
     (0 until numCols).foreach(col => pushRowElementIfNotZero(col, rowData(col), index))
   }
 
   // Store non-zero elements in arrays given a sparse feature value row
   def pushRow(rowData: SparseVector, index: Int): Unit = {
-    require(rowData.size <= numCols, s"Row is too large for sample data.  size should be $numCols" +
-                                     s", but is ${rowData.size}")
+    DatasetUtils.validateFeatureSize(rowData.size, numCols)
     (0 until rowData.numActives).foreach(i =>
       pushRowElementIfNotZero(rowData.indices(i), rowData.values(i), index))
   }
 
-  def pushRowElementIfNotZero(col: Int, value: Double, index: Int): Unit = {
+  private def pushRowElementIfNotZero(col: Int, value: Double, index: Int): Unit = {
     if (value != 0.0) {
       val nextIndex = rowCounts.getItem(col)
       sampleData.pushElement(col, nextIndex, value)

@@ -6,7 +6,7 @@ package com.microsoft.azure.synapse.ml.causal
 import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.schema.{DatasetExtensions, SchemaConstants}
 import com.microsoft.azure.synapse.ml.core.utils.StopWatch
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import com.microsoft.azure.synapse.ml.stages.DropColumns
 import com.microsoft.azure.synapse.ml.train.{TrainClassifier, TrainRegressor}
 import org.apache.commons.math3.stat.descriptive.rank.Percentile
@@ -64,7 +64,7 @@ class DoubleMLEstimator(override val uid: String)
   extends Estimator[DoubleMLModel] with ComplexParamsWritable
     with DoubleMLParams with SynapseMLLogging with Wrappable {
 
-  logClass()
+  logClass(FeatureNames.Causal)
 
   def this() = this(Identifiable.randomUID("DoubleMLEstimator"))
 
@@ -96,8 +96,8 @@ class DoubleMLEstimator(override val uid: String)
         }
       }
 
-      // sampling with replacement to redraw data and get TE value
-      // Run it for multiple times in parallel, get a number of TE values,
+      // sampling with replacement to redraw data and get a TE value
+      // Run it multiple times in parallel, get a number of TE values,
       // Use average as Ate value, and 2.5% low end, 97.5% high end as Ci value
       // Create execution context based on $(parallelism)
       log.info(s"Parallelism: $getParallelism")
@@ -246,7 +246,7 @@ class DoubleMLEstimator(override val uid: String)
       4. Cross-fit treatment and outcome models with the second split, residual model with the first split.
       5. Average slopes from the two residual models.
     */
-    val splits = dataset.randomSplit(getSampleSplitRatio)
+    val splits = dataset.toDF().randomSplit(getSampleSplitRatio)
     val (train, test) = (splits(0).cache, splits(1).cache)
     val residualsDF1 = calculateResiduals(train, test).select(outcomeResidualCol, treatmentResidualVecCol)
     val residualsDF2 = calculateResiduals(test, train).select(outcomeResidualCol, treatmentResidualVecCol)
@@ -314,7 +314,7 @@ object DoubleMLEstimator extends ComplexParamsReadable[DoubleMLEstimator] {
 /** Model produced by [[DoubleMLEstimator]]. */
 class DoubleMLModel(val uid: String)
   extends Model[DoubleMLModel] with DoubleMLParams with ComplexParamsWritable with Wrappable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Causal)
 
   override protected lazy val pyInternalWrapper = true
 

@@ -6,7 +6,9 @@ package com.microsoft.azure.synapse.ml.core.test.base
 import breeze.linalg.norm.Impl
 import breeze.linalg.{*, norm, DenseMatrix => BDM, DenseVector => BDV}
 import breeze.math.Field
+import com.globalmentor.apache.hadoop.fs.BareLocalFileSystem
 import org.apache.commons.io.FileUtils
+import org.apache.hadoop.fs.FileSystem
 import org.apache.spark._
 import org.apache.spark.ml._
 import org.apache.spark.sql.{DataFrame, _}
@@ -49,6 +51,8 @@ trait SparkSessionManagement {
       .set("spark.driver.maxResultSize", "6g")
       .set("spark.sql.crossJoin.enabled", "true")
       .set("spark.sql.warehouse.dir", localWarehousePath)
+      // Repository test fixtures are generated locally; security tests explicitly disable this.
+      .set(Serializer.LegacyObjectDeserializationConfig, "true")
   }
 
   def getSession(name: String,
@@ -67,6 +71,8 @@ trait SparkSessionManagement {
       .config(sparkConfiguration)
       .getOrCreate()
     sess.sparkContext.setLogLevel(logLevel)
+    sess.sparkContext.hadoopConfiguration
+      .setClass("fs.file.impl", classOf[BareLocalFileSystem], classOf[FileSystem])
     sess
   }
 
@@ -76,9 +82,9 @@ trait SparkSessionManagement {
 
   private var sparkInternal: Option[SparkSession] = None
 
-  def resetSparkSession(numRetries: Int = 1, numCores: Option[Int] = None): Unit = {
+  def resetSparkSession(numRetries: Int = 1, logLevel: String="WARN", numCores: Option[Int] = None): Unit = {
     sparkInternal.foreach(_.close())
-    sparkInternal = Some(getSession(s"$this", numRetries = numRetries, numCores = numCores)
+    sparkInternal = Some(getSession(s"$this", logLevel = logLevel, numRetries = numRetries, numCores = numCores)
     )
   }
 
@@ -181,6 +187,7 @@ abstract class TestBase extends AnyFunSuite with BeforeAndAfterEachTestData with
   }
 
   protected override def beforeAll(): Unit = {
+    System.setProperty("log4j1.compatibility", "true")
     suiteElapsed = 0
   }
 

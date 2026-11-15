@@ -7,7 +7,7 @@ import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts.{HasInputCol, HasOutputCol}
 import com.microsoft.azure.synapse.ml.core.schema.DatasetExtensions.{findUnusedColumnName => newCol}
 import com.microsoft.azure.synapse.ml.core.serialize.ComplexParam
-import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
+import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
 import com.microsoft.azure.synapse.ml.param._
 import com.microsoft.azure.synapse.ml.stages.UDFTransformer
 import org.apache.http.client.methods.HttpRequestBase
@@ -18,7 +18,7 @@ import org.apache.spark.ml.{ComplexParamsReadable, ComplexParamsWritable, Transf
 import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{ArrayType, DataType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType}
 import org.apache.spark.sql.{DataFrame, Dataset, Row}
 
 import scala.collection.JavaConverters._
@@ -35,7 +35,7 @@ object JSONInputParser extends ComplexParamsReadable[JSONInputParser]
 
 class JSONInputParser(val uid: String) extends HTTPInputParser
   with HasURL with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("JSONInputParser"))
 
@@ -92,7 +92,7 @@ class JSONInputParser(val uid: String) extends HTTPInputParser
 object CustomInputParser extends ComplexParamsReadable[CustomInputParser] with Serializable
 
 class CustomInputParser(val uid: String) extends HTTPInputParser with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("CustomInputParser"))
 
@@ -154,7 +154,7 @@ abstract class HTTPOutputParser extends Transformer with HasInputCol with HasOut
 object JSONOutputParser extends ComplexParamsReadable[JSONOutputParser]
 
 class JSONOutputParser(val uid: String) extends HTTPOutputParser with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   override protected lazy val pyInternalWrapper = true
 
@@ -199,9 +199,19 @@ class JSONOutputParser(val uid: String) extends HTTPOutputParser with ComplexPar
     }, dataset.columns.length)
   }
 
+  private def nullableJsonType(dataType: DataType): DataType = dataType match {
+    case StructType(fields) =>
+      StructType(fields.map(field => field.copy(dataType = nullableJsonType(field.dataType), nullable = true)))
+    case ArrayType(elementType, _) => ArrayType(nullableJsonType(elementType), containsNull = true)
+    case MapType(keyType, valueType, _) =>
+      MapType(nullableJsonType(keyType), nullableJsonType(valueType), valueContainsNull = true)
+    case other => other
+  }
+
   override def transformSchema(schema: StructType): StructType = {
     assert(schema(getInputCol).dataType == HTTPSchema.Response)
-    schema.add(getOutputCol, getDataType)
+    // Spark's from_json makes parsed fields nullable even when the supplied schema marks them required.
+    schema.add(getOutputCol, nullableJsonType(getDataType))
   }
 
 }
@@ -209,7 +219,7 @@ class JSONOutputParser(val uid: String) extends HTTPOutputParser with ComplexPar
 object StringOutputParser extends ComplexParamsReadable[StringOutputParser]
 
 class StringOutputParser(val uid: String) extends HTTPOutputParser with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("StringOutputParser"))
 
@@ -230,7 +240,7 @@ class StringOutputParser(val uid: String) extends HTTPOutputParser with ComplexP
 object CustomOutputParser extends ComplexParamsReadable[CustomOutputParser] with Serializable
 
 class CustomOutputParser(val uid: String) extends HTTPOutputParser with ComplexParamsWritable with SynapseMLLogging {
-  logClass()
+  logClass(FeatureNames.Core)
 
   def this() = this(Identifiable.randomUID("CustomOutputParser"))
 

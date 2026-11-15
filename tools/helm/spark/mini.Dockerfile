@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-FROM mcr.microsoft.com/openjdk/jdk:11-mariner
+FROM mcr.microsoft.com/openjdk/jdk:11-mariner@sha256:eea2eae2b8dc62991a43018ca65f895238f43ee0d94a55a7929dbaf7d4bfc7c7
 
 ARG spark_jars=jars
 ARG img_path=kubernetes/dockerfiles
@@ -24,7 +24,7 @@ ARG k8s_tests=kubernetes/tests
 
 # Get Spark from US Apache mirror.
 ENV APACHE_SPARK_VERSION 2.4.3
-ENV HADOOP_VERSION 3.1.2
+ENV HADOOP_VERSION 3.3.4
 ENV HADOOP_GIT_COMMIT="release-3.2.0-RC1"
 
 ENV SPARK_HOME=/opt/spark
